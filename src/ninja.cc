@@ -227,8 +227,12 @@ void Usage(const BuildConfig& config) {
 "  -d MODE  enable debugging (use -d list to list modes)\n"
 "  -t TOOL  run a subtool (use -t list to list subtools)\n"
 "    terminates toplevel options; further flags are passed to the tool\n"
-"  -w FLAG  adjust warnings (use -w list to list warnings)\n",
-          kNinjaVersion, config.parallelism);
+"  -w FLAG  adjust warnings (use -w list to list warnings)\n"
+#ifndef _WIN32
+"\n"
+"  --frontend COMMAND   execute COMMAND and pass serialized build output to it\n"
+#endif
+      , kNinjaVersion, config.parallelism);
 }
 
 /// Choose a default value for the -j (parallelism) flag.
@@ -1053,8 +1057,14 @@ int ReadFlags(int* argc, char*** argv,
               Options* options, BuildConfig* config) {
   config->parallelism = GuessParallelism();
 
-  enum { OPT_VERSION = 1 };
+  enum {
+    OPT_VERSION = 1,
+    OPT_FRONTEND = 2,
+  };
   const option kLongOptions[] = {
+#ifndef _WIN32
+    { "frontend", required_argument, NULL, OPT_FRONTEND },
+#endif
     { "help", no_argument, NULL, 'h' },
     { "version", no_argument, NULL, OPT_VERSION },
     { NULL, 0, NULL, 0 }
@@ -1062,7 +1072,7 @@ int ReadFlags(int* argc, char*** argv,
 
   int opt;
   while (!options->tool &&
-         (opt = getopt_long(*argc, *argv, "d:f:j:k:l:nt:vw:C:ph", kLongOptions,
+         (opt = getopt_long(*argc, *argv, "d:f:j:k:l:mnt:vw:C:ph", kLongOptions,
                             NULL)) != -1) {
     switch (opt) {
       case 'd':
@@ -1124,6 +1134,9 @@ int ReadFlags(int* argc, char*** argv,
       case OPT_VERSION:
         printf("%s\n", kNinjaVersion);
         return 0;
+      case OPT_FRONTEND:
+        config->frontend = optarg;
+        break;
       case 'h':
       default:
         Usage(*config);
@@ -1184,12 +1197,21 @@ NORETURN void real_main(int argc, char** argv) {
     exit((ninja.*options.tool->func)(&options, argc, argv));
   }
 
-  Status* status = new StatusPrinter(config);
+  Status* status = NULL;
 
   // Limit number of rebuilds, to prevent infinite loops.
   const int kCycleLimit = 100;
   for (int cycle = 1; cycle <= kCycleLimit; ++cycle) {
     NinjaMain ninja(ninja_command, config);
+
+    if (status == NULL) {
+#ifndef _WIN32
+      if (config.frontend != NULL)
+        status = new StatusSerializer(config);
+      else
+#endif
+        status = new StatusPrinter(config);
+    }
 
     ManifestParserOptions parser_opts;
     if (options.dupe_edges_should_err) {
@@ -1249,11 +1271,14 @@ NORETURN void real_main(int argc, char** argv) {
 
     if (g_metrics)
       ninja.DumpMetrics();
+
+    delete status;
     exit(result);
   }
 
   status->Error("manifest '%s' still dirty after %d tries",
       options.input_file, kCycleLimit);
+  delete status;
   exit(1);
 }
 
