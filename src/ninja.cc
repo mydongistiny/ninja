@@ -53,6 +53,11 @@ int MSVCHelperMain(int argc, char** argv);
 void CreateWin32MiniDump(_EXCEPTION_POINTERS* pep);
 #endif
 
+// Ninja intentionally leaks memory. Turn off LeakSanitizer by default.
+extern "C" const char* __asan_default_options() {
+  return "detect_leaks=0";
+}
+
 namespace {
 
 struct Tool;
