@@ -23,6 +23,7 @@ using namespace std;
 
 #include "timestamp.h"
 
+struct DiskInterface;
 struct Node;
 struct State;
 
@@ -68,7 +69,7 @@ struct DepsLog {
   ~DepsLog();
 
   // Writing (build-time) interface.
-  bool OpenForWrite(const string& path, string* err);
+  bool OpenForWrite(const string& path, const DiskInterface& disk, string* err);
   bool RecordDeps(Node* node, TimeStamp mtime, const vector<Node*>& nodes);
   bool RecordDeps(Node* node, TimeStamp mtime, int node_count, Node** nodes);
   void Close();
@@ -86,7 +87,7 @@ struct DepsLog {
   Deps* GetDeps(Node* node);
 
   /// Rewrite the known log entries, throwing away old data.
-  bool Recompact(const string& path, string* err);
+  bool Recompact(const string& path, const DiskInterface& disk, string* err);
 
   /// Returns if the deps entry for a node is still reachable from the manifest.
   ///

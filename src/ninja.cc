@@ -923,14 +923,14 @@ bool NinjaMain::OpenDepsLog(bool recompact_only) {
   }
 
   if (recompact_only) {
-    bool success = deps_log_.Recompact(path, &err);
+    bool success = deps_log_.Recompact(path, disk_interface_, &err);
     if (!success)
       Error("failed recompaction: %s", err.c_str());
     return success;
   }
 
   if (!config_.dry_run) {
-    if (!deps_log_.OpenForWrite(path, &err)) {
+    if (!deps_log_.OpenForWrite(path, disk_interface_, &err)) {
       Error("opening deps log: %s", err.c_str());
       return false;
     }

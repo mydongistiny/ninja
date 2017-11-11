@@ -41,7 +41,8 @@ TEST_F(DepsLogTest, WriteRead) {
   State state1;
   DepsLog log1;
   string err;
-  EXPECT_TRUE(log1.OpenForWrite(kTestFilename, &err));
+  VirtualFileSystem fs;
+  EXPECT_TRUE(log1.OpenForWrite(kTestFilename, fs, &err));
   ASSERT_EQ("", err);
 
   {
@@ -93,7 +94,8 @@ TEST_F(DepsLogTest, LotsOfDeps) {
   State state1;
   DepsLog log1;
   string err;
-  EXPECT_TRUE(log1.OpenForWrite(kTestFilename, &err));
+  VirtualFileSystem fs;
+  EXPECT_TRUE(log1.OpenForWrite(kTestFilename, fs, &err));
   ASSERT_EQ("", err);
 
   {
@@ -128,7 +130,8 @@ TEST_F(DepsLogTest, DoubleEntry) {
     State state;
     DepsLog log;
     string err;
-    EXPECT_TRUE(log.OpenForWrite(kTestFilename, &err));
+    VirtualFileSystem fs;
+    EXPECT_TRUE(log.OpenForWrite(kTestFilename, fs, &err));
     ASSERT_EQ("", err);
 
     vector<Node*> deps;
@@ -148,9 +151,10 @@ TEST_F(DepsLogTest, DoubleEntry) {
     State state;
     DepsLog log;
     string err;
+    VirtualFileSystem fs;
     EXPECT_TRUE(log.Load(kTestFilename, &state, &err));
 
-    EXPECT_TRUE(log.OpenForWrite(kTestFilename, &err));
+    EXPECT_TRUE(log.OpenForWrite(kTestFilename, fs, &err));
     ASSERT_EQ("", err);
 
     vector<Node*> deps;
@@ -182,7 +186,8 @@ TEST_F(DepsLogTest, Recompact) {
     ASSERT_NO_FATAL_FAILURE(AssertParse(&state, kManifest));
     DepsLog log;
     string err;
-    ASSERT_TRUE(log.OpenForWrite(kTestFilename, &err));
+    VirtualFileSystem fs;
+    ASSERT_TRUE(log.OpenForWrite(kTestFilename, fs, &err));
     ASSERT_EQ("", err);
 
     vector<Node*> deps;
@@ -210,9 +215,10 @@ TEST_F(DepsLogTest, Recompact) {
     ASSERT_NO_FATAL_FAILURE(AssertParse(&state, kManifest));
     DepsLog log;
     string err;
+    VirtualFileSystem fs;
     ASSERT_TRUE(log.Load(kTestFilename, &state, &err));
 
-    ASSERT_TRUE(log.OpenForWrite(kTestFilename, &err));
+    ASSERT_TRUE(log.OpenForWrite(kTestFilename, fs, &err));
     ASSERT_EQ("", err);
 
     vector<Node*> deps;
@@ -252,7 +258,8 @@ TEST_F(DepsLogTest, Recompact) {
     ASSERT_EQ("foo.h", deps->nodes[0]->path());
     ASSERT_EQ("baz.h", deps->nodes[1]->path());
 
-    ASSERT_TRUE(log.Recompact(kTestFilename, &err));
+    VirtualFileSystem fs;
+    ASSERT_TRUE(log.Recompact(kTestFilename, fs, &err));
 
     // The in-memory deps graph should still be valid after recompaction.
     deps = log.GetDeps(out);
@@ -301,17 +308,25 @@ TEST_F(DepsLogTest, Recompact) {
     ASSERT_EQ("foo.h", deps->nodes[0]->path());
     ASSERT_EQ("baz.h", deps->nodes[1]->path());
 
-    ASSERT_TRUE(log.Recompact(kTestFilename, &err));
+    // Keep out.o dependencies.
+    VirtualFileSystem fs;
+    fs.Create("out.o", "");
+
+    ASSERT_TRUE(log.Recompact(kTestFilename, fs, &err));
+
+    deps = log.GetDeps(out);
+    ASSERT_TRUE(deps);
+    ASSERT_EQ(1, deps->mtime);
+    ASSERT_EQ(1, deps->node_count);
+    ASSERT_EQ("foo.h", deps->nodes[0]->path());
+    ASSERT_EQ(out, log.nodes()[out->id()]);
 
     // The previous entries should have been removed.
-    deps = log.GetDeps(out);
-    ASSERT_FALSE(deps);
-
     deps = log.GetDeps(other_out);
     ASSERT_FALSE(deps);
 
+    //ASSERT_EQ(-1, state.LookupNode("foo.h")->id());
     // The .h files pulled in via deps should no longer have ids either.
-    ASSERT_EQ(-1, state.LookupNode("foo.h")->id());
     ASSERT_EQ(-1, state.LookupNode("baz.h")->id());
 
     // The file should have shrunk more.
@@ -355,7 +370,8 @@ TEST_F(DepsLogTest, Truncated) {
     State state;
     DepsLog log;
     string err;
-    EXPECT_TRUE(log.OpenForWrite(kTestFilename, &err));
+    VirtualFileSystem fs;
+    EXPECT_TRUE(log.OpenForWrite(kTestFilename, fs, &err));
     ASSERT_EQ("", err);
 
     vector<Node*> deps;
@@ -414,7 +430,8 @@ TEST_F(DepsLogTest, TruncatedRecovery) {
     State state;
     DepsLog log;
     string err;
-    EXPECT_TRUE(log.OpenForWrite(kTestFilename, &err));
+    VirtualFileSystem fs;
+    EXPECT_TRUE(log.OpenForWrite(kTestFilename, fs, &err));
     ASSERT_EQ("", err);
 
     vector<Node*> deps;
@@ -450,7 +467,8 @@ TEST_F(DepsLogTest, TruncatedRecovery) {
     // The truncated entry should've been discarded.
     EXPECT_EQ(NULL, log.GetDeps(state.GetNode("out2.o", 0)));
 
-    EXPECT_TRUE(log.OpenForWrite(kTestFilename, &err));
+    VirtualFileSystem fs;
+    EXPECT_TRUE(log.OpenForWrite(kTestFilename, fs, &err));
     ASSERT_EQ("", err);
 
     // Add a new entry.

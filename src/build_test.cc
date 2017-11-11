@@ -578,7 +578,7 @@ void BuildTest::RebuildTarget(const string& target, const char* manifest,
   DepsLog deps_log, *pdeps_log = NULL;
   if (deps_path) {
     ASSERT_TRUE(deps_log.Load(deps_path, pstate, &err));
-    ASSERT_TRUE(deps_log.OpenForWrite(deps_path, &err));
+    ASSERT_TRUE(deps_log.OpenForWrite(deps_path, fs_, &err));
     ASSERT_EQ("", err);
     pdeps_log = &deps_log;
   }
@@ -1873,7 +1873,7 @@ TEST_F(BuildWithDepsLogTest, Straightforward) {
 
     // Run the build once, everything should be ok.
     DepsLog deps_log;
-    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", &err));
+    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", fs_, &err));
     ASSERT_EQ("", err);
 
     Builder builder(&state, config_, NULL, &deps_log, &fs_);
@@ -1904,7 +1904,7 @@ TEST_F(BuildWithDepsLogTest, Straightforward) {
     // Run the build again.
     DepsLog deps_log;
     ASSERT_TRUE(deps_log.Load("ninja_deps", &state, &err));
-    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", &err));
+    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", fs_, &err));
 
     Builder builder(&state, config_, NULL, &deps_log, &fs_);
     builder.command_runner_.reset(&command_runner_);
@@ -1944,7 +1944,7 @@ TEST_F(BuildWithDepsLogTest, ObsoleteDeps) {
 
     // Run the build once, everything should be ok.
     DepsLog deps_log;
-    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", &err));
+    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", fs_, &err));
     ASSERT_EQ("", err);
 
     Builder builder(&state, config_, NULL, &deps_log, &fs_);
@@ -1974,7 +1974,7 @@ TEST_F(BuildWithDepsLogTest, ObsoleteDeps) {
 
     DepsLog deps_log;
     ASSERT_TRUE(deps_log.Load("ninja_deps", &state, &err));
-    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", &err));
+    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", fs_, &err));
 
     Builder builder(&state, config_, NULL, &deps_log, &fs_);
     builder.command_runner_.reset(&command_runner_);
@@ -2067,7 +2067,7 @@ TEST_F(BuildWithDepsLogTest, RestatDepfileDependencyDepsLog) {
 
     // Run the build once, everything should be ok.
     DepsLog deps_log;
-    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", &err));
+    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", fs_, &err));
     ASSERT_EQ("", err);
 
     Builder builder(&state, config_, NULL, &deps_log, &fs_);
@@ -2094,7 +2094,7 @@ TEST_F(BuildWithDepsLogTest, RestatDepfileDependencyDepsLog) {
     // Run the build again.
     DepsLog deps_log;
     ASSERT_TRUE(deps_log.Load("ninja_deps", &state, &err));
-    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", &err));
+    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", fs_, &err));
 
     Builder builder(&state, config_, NULL, &deps_log, &fs_);
     builder.command_runner_.reset(&command_runner_);
@@ -2126,7 +2126,7 @@ TEST_F(BuildWithDepsLogTest, DepFileOKDepsLog) {
 
     // Run the build once, everything should be ok.
     DepsLog deps_log;
-    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", &err));
+    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", fs_, &err));
     ASSERT_EQ("", err);
 
     Builder builder(&state, config_, NULL, &deps_log, &fs_);
@@ -2147,7 +2147,7 @@ TEST_F(BuildWithDepsLogTest, DepFileOKDepsLog) {
 
     DepsLog deps_log;
     ASSERT_TRUE(deps_log.Load("ninja_deps", &state, &err));
-    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", &err));
+    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", fs_, &err));
     ASSERT_EQ("", err);
 
     Builder builder(&state, config_, NULL, &deps_log, &fs_);
@@ -2188,7 +2188,7 @@ TEST_F(BuildWithDepsLogTest, DepFileDepsLogCanonicalize) {
 
     // Run the build once, everything should be ok.
     DepsLog deps_log;
-    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", &err));
+    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", fs_, &err));
     ASSERT_EQ("", err);
 
     Builder builder(&state, config_, NULL, &deps_log, &fs_);
@@ -2211,7 +2211,7 @@ TEST_F(BuildWithDepsLogTest, DepFileDepsLogCanonicalize) {
 
     DepsLog deps_log;
     ASSERT_TRUE(deps_log.Load("ninja_deps", &state, &err));
-    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", &err));
+    ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", fs_, &err));
     ASSERT_EQ("", err);
 
     Builder builder(&state, config_, NULL, &deps_log, &fs_);
