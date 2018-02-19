@@ -75,6 +75,9 @@ struct Options {
 
   /// Whether duplicate rules for one target should warn or print an error.
   bool dupe_edges_should_err;
+
+  /// Whether to remain persistent.
+  bool persistent;
 };
 
 /// The Ninja main() loads up a series of data structures; various tools need
@@ -1041,7 +1044,7 @@ int ReadFlags(int* argc, char*** argv,
 
   int opt;
   while (!options->tool &&
-         (opt = getopt_long(*argc, *argv, "d:f:j:k:l:nt:vw:C:h", kLongOptions,
+         (opt = getopt_long(*argc, *argv, "d:f:j:k:l:nt:vw:C:ph", kLongOptions,
                             NULL)) != -1) {
     switch (opt) {
       case 'd':
@@ -1097,6 +1100,9 @@ int ReadFlags(int* argc, char*** argv,
       case 'C':
         options->working_dir = optarg;
         break;
+      case 'p':
+        options->persistent = true;
+        break;
       case OPT_VERSION:
         printf("%s\n", kNinjaVersion);
         return 0;
@@ -1110,6 +1116,19 @@ int ReadFlags(int* argc, char*** argv,
   *argc -= optind;
 
   return -1;
+}
+
+static void WaitForInput(const BuildConfig& config) {
+  static char* buf = nullptr;
+  static size_t len = 0;
+
+  if (config.verbosity == BuildConfig::VERBOSE) {
+    fprintf(stderr, "ninja waiting for input...\n");
+  }
+  ssize_t rc = getline(&buf, &len, stdin);
+  if (rc < 0) {
+    exit(0);
+  }
 }
 
 NORETURN void real_main(int argc, char** argv) {
@@ -1186,7 +1205,23 @@ NORETURN void real_main(int argc, char** argv) {
       exit(1);
     }
 
-    int result = ninja.RunBuild(argc, argv);
+    int result = 0;
+    do {
+      Stopwatch stopwatch;
+
+      if (options.persistent) {
+        WaitForInput(config);
+        stopwatch.Restart();
+      }
+
+      result = ninja.RunBuild(argc, argv);
+      if (options.persistent) {
+        fprintf(stderr, "build %s in %0.3f seconds\n",
+                result == 0 ? "succeeded" : "failed", stopwatch.Elapsed());
+        ninja.state_.Reset();
+      }
+    } while (options.persistent);
+
     if (g_metrics)
       ninja.DumpMetrics();
     exit(result);
