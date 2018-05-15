@@ -185,59 +185,6 @@ TEST_F(PlanTest, DoubleDependent) {
   ASSERT_FALSE(edge);  // done
 }
 
-TEST_F(PlanTest, DependencyCycle) {
-  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
-"build out: cat mid\n"
-"build mid: cat in\n"
-"build in: cat pre\n"
-"build pre: cat out\n"));
-  GetNode("out")->MarkDirty();
-  GetNode("mid")->MarkDirty();
-  GetNode("in")->MarkDirty();
-  GetNode("pre")->MarkDirty();
-
-  string err;
-  EXPECT_FALSE(plan_.AddTarget(GetNode("out"), &err));
-  ASSERT_EQ("dependency cycle: out -> mid -> in -> pre -> out", err);
-}
-
-TEST_F(PlanTest, CycleInEdgesButNotInNodes1) {
-  string err;
-  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
-"build a b: cat a\n"));
-  EXPECT_FALSE(plan_.AddTarget(GetNode("b"), &err));
-  ASSERT_EQ("dependency cycle: a -> a", err);
-}
-
-TEST_F(PlanTest, CycleInEdgesButNotInNodes2) {
-  string err;
-  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
-"build b a: cat a\n"));
-  EXPECT_FALSE(plan_.AddTarget(GetNode("b"), &err));
-  ASSERT_EQ("dependency cycle: a -> a", err);
-}
-
-TEST_F(PlanTest, CycleInEdgesButNotInNodes3) {
-  string err;
-  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
-"build a b: cat c\n"
-"build c: cat a\n"));
-  EXPECT_FALSE(plan_.AddTarget(GetNode("b"), &err));
-  ASSERT_EQ("dependency cycle: c -> a -> c", err);
-}
-
-TEST_F(PlanTest, CycleInEdgesButNotInNodes4) {
-  string err;
-  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
-"build d: cat c\n"
-"build c: cat b\n"
-"build b: cat a\n"
-"build a e: cat d\n"
-"build f: cat e\n"));
-  EXPECT_FALSE(plan_.AddTarget(GetNode("f"), &err));
-  ASSERT_EQ("dependency cycle: d -> c -> b -> a -> d", err);
-}
-
 void PlanTest::TestPoolWithDepthOne(const char* test_case) {
   ASSERT_NO_FATAL_FAILURE(AssertParse(&state_, test_case));
   GetNode("out1")->MarkDirty();
@@ -1121,6 +1068,19 @@ TEST_F(BuildTest, PhonyNoWork) {
   EXPECT_TRUE(builder_.AlreadyUpToDate());
 }
 
+// Test a self-referencing phony.  Ideally this should not work, but
+// ninja 1.7 and below tolerated and CMake 2.8.12.x and 3.0.x both
+// incorrectly produce it.  We tolerate it for compatibility.
+TEST_F(BuildTest, PhonySelfReference) {
+  string err;
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"build a: phony a\n"));
+
+  EXPECT_TRUE(builder_.AddTarget("a", &err));
+  ASSERT_EQ("", err);
+  EXPECT_TRUE(builder_.AlreadyUpToDate());
+}
+
 TEST_F(BuildTest, Fail) {
   ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
 "rule fail\n"
@@ -1747,8 +1707,8 @@ TEST_F(BuildTest, InterruptCleanup) {
 TEST_F(BuildTest, StatFailureAbortsBuild) {
   const string kTooLongToStat(400, 'i');
   ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
-("build " + kTooLongToStat + ": cat " + kTooLongToStat + "\n").c_str()));
-  // Also cyclic, for good measure.
+("build " + kTooLongToStat + ": cat in\n").c_str()));
+  fs_.Create("in", "");
 
   // This simulates a stat failure:
   fs_.files_[kTooLongToStat].mtime = -1;
