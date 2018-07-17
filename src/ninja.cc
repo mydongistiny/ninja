@@ -230,7 +230,8 @@ void Usage(const BuildConfig& config) {
 "  -w FLAG  adjust warnings (use -w list to list warnings)\n"
 #ifndef _WIN32
 "\n"
-"  --frontend COMMAND   execute COMMAND and pass serialized build output to it\n"
+"  --frontend COMMAND    execute COMMAND and pass serialized build output to it\n"
+"  --frontend_file FILE  write serialized build output to FILE\n"
 #endif
       , kNinjaVersion, config.parallelism);
 }
@@ -1060,10 +1061,12 @@ int ReadFlags(int* argc, char*** argv,
   enum {
     OPT_VERSION = 1,
     OPT_FRONTEND = 2,
+    OPT_FRONTEND_FILE = 3,
   };
   const option kLongOptions[] = {
 #ifndef _WIN32
     { "frontend", required_argument, NULL, OPT_FRONTEND },
+    { "frontend_file", required_argument, NULL, OPT_FRONTEND_FILE },
 #endif
     { "help", no_argument, NULL, 'h' },
     { "version", no_argument, NULL, OPT_VERSION },
@@ -1137,6 +1140,9 @@ int ReadFlags(int* argc, char*** argv,
       case OPT_FRONTEND:
         config->frontend = optarg;
         break;
+      case OPT_FRONTEND_FILE:
+        config->frontend_file = optarg;
+        break;
       case 'h':
       default:
         Usage(*config);
@@ -1145,6 +1151,10 @@ int ReadFlags(int* argc, char*** argv,
   }
   *argv += optind;
   *argc -= optind;
+
+  if (config->frontend != NULL && config->frontend_file != NULL) {
+    Fatal("only one of --frontend or --frontend_file may be specified.");
+  }
 
   return -1;
 }
@@ -1206,7 +1216,7 @@ NORETURN void real_main(int argc, char** argv) {
 
     if (status == NULL) {
 #ifndef _WIN32
-      if (config.frontend != NULL)
+      if (config.frontend != NULL || config.frontend_file != NULL)
         status = new StatusSerializer(config);
       else
 #endif

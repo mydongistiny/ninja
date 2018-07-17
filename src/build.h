@@ -123,7 +123,7 @@ struct CommandRunner {
 struct BuildConfig {
   BuildConfig() : verbosity(NORMAL), dry_run(false), parallelism(1),
                   failures_allowed(1), max_load_average(-0.0f),
-                  frontend(NULL) {}
+                  frontend(NULL), frontend_file(NULL) {}
 
   enum Verbosity {
     NORMAL,
@@ -140,6 +140,9 @@ struct BuildConfig {
 
   /// Command to execute to handle build output
   const char* frontend;
+
+  /// File to write build output to
+  const char* frontend_file;
 };
 
 /// Builder wraps the build process: starting commands, updating status.

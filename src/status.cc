@@ -246,28 +246,41 @@ void StatusPrinter::Info(const char* msg, ...) {
 
 StatusSerializer::StatusSerializer(const BuildConfig& config) :
     config_(config), subprocess_(NULL), total_edges_(0) {
-  int output_pipe[2];
-  if (pipe(output_pipe) < 0)
-    Fatal("pipe: %s", strerror(errno));
-  SetCloseOnExec(output_pipe[1]);
+  if (config.frontend != NULL) {
+    int output_pipe[2];
+    if (pipe(output_pipe) < 0)
+      Fatal("pipe: %s", strerror(errno));
+    SetCloseOnExec(output_pipe[1]);
 
-  f_ = fdopen(output_pipe[1], "wb");
+    f_ = fdopen(output_pipe[1], "wb");
+
+    // Launch the frontend as a subprocess with write-end of the pipe as fd 3
+    subprocess_ = subprocess_set_.Add(config.frontend, /*use_console=*/true,
+                                      output_pipe[0]);
+    close(output_pipe[0]);
+  } else if (config.frontend_file != NULL) {
+    f_ = fopen(config.frontend_file, "wb");
+    if (!f_) {
+      Fatal("fopen: %s", strerror(errno));
+    }
+    SetCloseOnExec(fileno(f_));
+  } else {
+    Fatal("No output specified for serialization");
+  }
+
   setvbuf(f_, NULL, _IONBF, 0);
   filebuf_ = new ofilebuf(f_);
   out_ = new std::ostream(filebuf_);
-
-  // Launch the frontend as a subprocess with write-end of the pipe as fd 3
-  subprocess_ = subprocess_set_.Add(config.frontend, /*use_console=*/true,
-                                    output_pipe[0]);
-  close(output_pipe[0]);
 }
 
 StatusSerializer::~StatusSerializer() {
   delete out_;
   delete filebuf_;
   fclose(f_);
-  subprocess_->Finish();
-  subprocess_set_.Clear();
+  if (subprocess_ != NULL) {
+    subprocess_->Finish();
+    subprocess_set_.Clear();
+  }
 }
 
 void StatusSerializer::Send() {
