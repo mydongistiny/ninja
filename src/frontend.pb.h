@@ -18,6 +18,7 @@ struct Status {
     bool has_total_edges_;
 
     TotalEdges() {
+      has_total_edges_ = false;
       total_edges_ = static_cast< uint32_t >(0);
     }
 
@@ -55,7 +56,9 @@ struct Status {
     bool has_verbose_;
 
     BuildStarted() {
+      has_parallelism_ = false;
       parallelism_ = static_cast< uint32_t >(0);
+      has_verbose_ = false;
       verbose_ = static_cast< bool >(0);
     }
 
@@ -134,8 +137,15 @@ struct Status {
     bool has_console_;
 
     EdgeStarted() {
+      has_id_ = false;
       id_ = static_cast< uint32_t >(0);
+      has_start_time_ = false;
       start_time_ = static_cast< uint32_t >(0);
+      has_inputs_ = false;
+      has_outputs_ = false;
+      has_desc_ = false;
+      has_command_ = false;
+      has_console_ = false;
       console_ = static_cast< bool >(0);
     }
 
@@ -263,9 +273,13 @@ struct Status {
     bool has_output_;
 
     EdgeFinished() {
+      has_id_ = false;
       id_ = static_cast< uint32_t >(0);
+      has_end_time_ = false;
       end_time_ = static_cast< uint32_t >(0);
+      has_status_ = false;
       status_ = static_cast< int32_t >(0);
+      has_output_ = false;
     }
 
     EdgeFinished(const EdgeFinished&);
@@ -341,7 +355,9 @@ struct Status {
     bool has_message_;
 
     Message() {
+      has_level_ = false;
       level_ = static_cast< ::ninja::Status::Message::Level >(0);
+      has_message_ = false;
     }
 
     Message(const Message&);
@@ -396,6 +412,12 @@ struct Status {
   bool has_message_;
 
   Status() {
+    has_total_edges_ = false;
+    has_build_started_ = false;
+    has_build_finished_ = false;
+    has_edge_started_ = false;
+    has_edge_finished_ = false;
+    has_message_ = false;
   }
 
   Status(const Status&);

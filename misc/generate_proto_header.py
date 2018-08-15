@@ -145,6 +145,12 @@ class Generator:
             'member_name': member_name,
         })
 
+        ctor.writelines("""
+            has_%(member_name)s = false;
+        """ % {
+            'member_name': member_name,
+        })
+
         methods.writelines("""
                 %(type)s* mutable_%(name)s() {
                   has_%(member_name)s = true;
