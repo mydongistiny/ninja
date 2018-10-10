@@ -36,6 +36,14 @@
 #include "metrics.h"
 #include "util.h"
 
+#ifndef FALLTHROUGH_INTENDED
+#if defined(__has_cpp_attribute) && __has_cpp_attribute(clang::fallthrough)
+#define FALLTHROUGH_INTENDED [[clang::fallthrough]]
+#else
+#define FALLTHROUGH_INTENDED
+#endif
+#endif
+
 // Implementation details:
 // Each run's log appends to the log file.
 // To load, we run through all log entries in series, throwing away
@@ -75,12 +83,12 @@ uint64_t MurmurHash64A(const void* key, size_t len) {
   }
   switch (len & 7)
   {
-  case 7: h ^= uint64_t(data[6]) << 48;
-  case 6: h ^= uint64_t(data[5]) << 40;
-  case 5: h ^= uint64_t(data[4]) << 32;
-  case 4: h ^= uint64_t(data[3]) << 24;
-  case 3: h ^= uint64_t(data[2]) << 16;
-  case 2: h ^= uint64_t(data[1]) << 8;
+  case 7: h ^= uint64_t(data[6]) << 48; FALLTHROUGH_INTENDED;
+  case 6: h ^= uint64_t(data[5]) << 40; FALLTHROUGH_INTENDED;
+  case 5: h ^= uint64_t(data[4]) << 32; FALLTHROUGH_INTENDED;
+  case 4: h ^= uint64_t(data[3]) << 24; FALLTHROUGH_INTENDED;
+  case 3: h ^= uint64_t(data[2]) << 16; FALLTHROUGH_INTENDED;
+  case 2: h ^= uint64_t(data[1]) << 8; FALLTHROUGH_INTENDED;
   case 1: h ^= uint64_t(data[0]);
           h *= m;
   };

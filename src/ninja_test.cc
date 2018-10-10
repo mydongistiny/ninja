@@ -104,6 +104,9 @@ bool ReadFlags(int* argc, char*** argv, const char** test_filter) {
         *test_filter = optarg;
         break;
       }  // else fall through.
+#if defined(__has_cpp_attribute) && __has_cpp_attribute(clang::fallthrough)
+      [[clang::fallthrough]];
+#endif
     default:
       Usage();
       return false;

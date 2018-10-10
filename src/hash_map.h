@@ -19,6 +19,14 @@
 #include <string.h>
 #include "string_piece.h"
 
+#ifndef FALLTHROUGH_INTENDED
+#if defined(__has_cpp_attribute) && __has_cpp_attribute(clang::fallthrough)
+#define FALLTHROUGH_INTENDED [[clang::fallthrough]]
+#else
+#define FALLTHROUGH_INTENDED
+#endif
+#endif
+
 // MurmurHash2, by Austin Appleby
 static inline
 unsigned int MurmurHash2(const void* key, size_t len) {
@@ -39,8 +47,8 @@ unsigned int MurmurHash2(const void* key, size_t len) {
     len -= 4;
   }
   switch (len) {
-  case 3: h ^= data[2] << 16;
-  case 2: h ^= data[1] << 8;
+  case 3: h ^= data[2] << 16; FALLTHROUGH_INTENDED;
+  case 2: h ^= data[1] << 8; FALLTHROUGH_INTENDED;
   case 1: h ^= data[0];
     h *= m;
   };
