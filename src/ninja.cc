@@ -30,6 +30,9 @@
 #include <unistd.h>
 #endif
 
+#include <deque>
+#include <unordered_map>
+
 #include "browse.h"
 #include "build.h"
 #include "build_log.h"
@@ -123,6 +126,7 @@ struct NinjaMain : public BuildLogUser {
 
   // The various subcommands, run via "-t XXX".
   int ToolGraph(const Options* options, int argc, char* argv[]);
+  int ToolPath(const Options* options, int argc, char* argv[]);
   int ToolQuery(const Options* options, int argc, char* argv[]);
   int ToolDeps(const Options* options, int argc, char* argv[]);
   int ToolBrowse(const Options* options, int argc, char* argv[]);
@@ -361,6 +365,50 @@ int NinjaMain::ToolGraph(const Options* options, int argc, char* argv[]) {
   graph.Finish();
 
   return 0;
+}
+
+int NinjaMain::ToolPath(const Options* options, int argc, char* argv[]) {
+  if (argc != 2) {
+    Error("expected two targets to find a dependency chain between");
+    return 1;
+  }
+  std::string err;
+  Node* out = CollectTarget(argv[0], &err);
+  if (!out) {
+    Error("%s", err.c_str());
+    return 1;
+  }
+  Node* in = CollectTarget(argv[1], &err);
+  if (!in) {
+    Error("%s", err.c_str());
+    return 1;
+  }
+
+  // BFS from "in", looking for "out". The map record a node's input that leads
+  // back to "in".
+  std::unordered_map<Node*, Node*> node_next;
+  std::deque<Node*> queue;
+  queue.push_back(in);
+  while (!queue.empty()) {
+    Node* node = queue[0];
+    queue.pop_front();
+    if (node == out) {
+      for (; node != nullptr; node = node_next[node]) {
+        printf("%s\n", node->path().c_str());
+      }
+      return 0;
+    }
+    for (Edge* edge : node->GetOutEdges()) {
+      for (Node* output : edge->outputs_) {
+        if (node_next.count(output) == 0) {
+          node_next[output] = node;
+          queue.push_back(output);
+        }
+      }
+    }
+  }
+  Error("%s does not depend on %s", out->path().c_str(), in->path().c_str());
+  return 1;
 }
 
 int NinjaMain::ToolQuery(const Options* options, int argc, char* argv[]) {
@@ -780,6 +828,8 @@ const Tool* ChooseTool(const string& tool_name) {
       Tool::RUN_AFTER_LOGS, &NinjaMain::ToolDeps },
     { "graph", "output graphviz dot file for targets",
       Tool::RUN_AFTER_LOAD, &NinjaMain::ToolGraph },
+    { "path", "find dependency path between two targets",
+      Tool::RUN_AFTER_LOGS, &NinjaMain::ToolPath },
     { "query", "show inputs/outputs for a path",
       Tool::RUN_AFTER_LOGS, &NinjaMain::ToolQuery },
     { "targets",  "list targets by their rule or depth in the DAG",
