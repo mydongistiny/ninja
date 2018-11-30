@@ -25,6 +25,7 @@ cc_defaults {
         "-DNINJA_PYTHON=\"python\"",
         "-DNINJA_HAVE_BROWSE",
     ],
+    cpp_std: "c++14",
     target: {
         linux_glibc: {
             cflags: ["-DUSE_PPOLL"],
