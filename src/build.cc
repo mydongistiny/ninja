@@ -691,6 +691,15 @@ bool Builder::ExtractDeps(CommandRunner::Result* result,
       break;
     case DiskInterface::NotFound:
       err->clear();
+      // We only care if the depfile is missing when the tool succeeded.
+      if (!config_.dry_run && result->status == ExitSuccess) {
+        if (config_.missing_depfile_should_err) {
+          *err = string("depfile is missing");
+          return false;
+        } else {
+          status_->Warning("depfile is missing (%s for %s)", depfile.c_str(), result->edge->outputs_[0]->path().c_str());
+        }
+      }
       break;
     case DiskInterface::OtherError:
       return false;

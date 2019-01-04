@@ -456,10 +456,54 @@ struct FakeCommandRunner : public CommandRunner {
   VirtualFileSystem* fs_;
 };
 
+/// Fake implementation of Status, useful for tests.
+struct FakeStatus : public Status {
+  explicit FakeStatus() : last_output_(), warnings_() {}
+
+  virtual void PlanHasTotalEdges(int total) {}
+  virtual void BuildEdgeStarted(Edge* edge, int64_t start_time_millis) {}
+  virtual void BuildStarted() {}
+  virtual void BuildFinished() {}
+
+  virtual void Info(const char* msg, ...) {}
+  virtual void Error(const char* msg, ...) {}
+
+  virtual void BuildEdgeFinished(Edge* edge, int64_t end_time_millis,
+                                 const CommandRunner::Result* result) {
+    last_output_ = result->output;
+  }
+
+  virtual void Warning(const char* msg, ...) {
+    va_list ap, ap2;
+    va_start(ap, msg);
+    va_copy(ap2, ap);
+
+    int len = vsnprintf(NULL, 0, msg, ap2);
+    va_end(ap2);
+    if (len < 0) {
+      warnings_.push_back("vsnprintf failed");
+      return;
+    }
+
+    string buf;
+    buf.resize(len + 1);
+
+    len = vsnprintf(&buf[0], len + 1, msg, ap);
+    buf.resize(len);
+
+    warnings_.push_back(buf);
+
+    va_end(ap);
+  }
+
+  string last_output_;
+  vector<string> warnings_;
+};
+
 struct BuildTest : public StateTestWithBuiltinRules, public BuildLogUser {
   BuildTest() : config_(MakeConfig()), command_runner_(&fs_),
                 builder_(&state_, config_, NULL, NULL, &fs_, &status_, 0),
-                status_(config_) {
+                status_() {
   }
 
   virtual void SetUp() {
@@ -502,7 +546,7 @@ struct BuildTest : public StateTestWithBuiltinRules, public BuildLogUser {
   VirtualFileSystem fs_;
   Builder builder_;
 
-  StatusPrinter status_;
+  FakeStatus status_;
 };
 
 void BuildTest::RebuildTarget(const string& target, const char* manifest,
@@ -1764,18 +1808,6 @@ TEST_F(BuildTest, DepsGccWithEmptyDepfileErrorsOut) {
   ASSERT_EQ(1u, command_runner_.commands_ran_.size());
 }
 
-TEST_F(BuildTest, StatusFormatElapsed) {
-  status_.BuildStarted();
-  // Before any task is done, the elapsed time must be zero.
-  EXPECT_EQ("[%/e0.000]",
-            status_.FormatProgressStatus("[%%/e%e]", 0));
-}
-
-TEST_F(BuildTest, StatusFormatReplacePlaceholder) {
-  EXPECT_EQ("[%/s0/t0/r0/u0/f0]",
-            status_.FormatProgressStatus("[%%/s%s/t%t/r%r/u%u/f%f]", 0));
-}
-
 TEST_F(BuildTest, FailedDepsParse) {
   ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
 "build bad_deps.o: cat in1\n"
@@ -2306,4 +2338,56 @@ TEST_F(BuildTest, Console) {
   EXPECT_TRUE(builder_.Build(&err));
   EXPECT_EQ("", err);
   ASSERT_EQ(1u, command_runner_.commands_ran_.size());
+}
+
+TEST_F(BuildWithDepsLogTest, MissingDepfileWarning) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"build out1: cat in1\n"
+"  deps = gcc\n"
+"  depfile = in1.d\n"));
+
+  string err;
+  DepsLog deps_log;
+  ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", fs_, &err));
+  ASSERT_EQ("", err);
+
+  Builder builder(&state_, config_, NULL, &deps_log, &fs_, &status_, 0);
+  builder.command_runner_.reset(&command_runner_);
+
+  EXPECT_TRUE(builder.AddTarget("out1", &err));
+  ASSERT_EQ("", err);
+
+  EXPECT_TRUE(builder.Build(&err));
+
+  ASSERT_EQ(1u, status_.warnings_.size());
+  ASSERT_EQ("depfile is missing (in1.d for out1)", status_.warnings_[0]);
+
+  builder.command_runner_.release();
+}
+
+TEST_F(BuildWithDepsLogTest, MissingDepfileError) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"build out1: cat in1\n"
+"  deps = gcc\n"
+"  depfile = in1.d\n"));
+
+  config_.missing_depfile_should_err = true;
+
+  string err;
+  DepsLog deps_log;
+  ASSERT_TRUE(deps_log.OpenForWrite("ninja_deps", fs_, &err));
+  ASSERT_EQ("", err);
+
+  Builder builder(&state_, config_, NULL, &deps_log, &fs_, &status_, 0);
+  builder.command_runner_.reset(&command_runner_);
+
+  EXPECT_TRUE(builder.AddTarget("out1", &err));
+  ASSERT_EQ("", err);
+
+  EXPECT_FALSE(builder.Build(&err));
+  EXPECT_EQ("subcommand failed", err);
+
+  EXPECT_EQ("depfile is missing", status_.last_output_);
+
+  builder.command_runner_.release();
 }

@@ -864,11 +864,12 @@ bool DebugEnable(const string& name) {
 
 /// Set a warning flag.  Returns false if Ninja should exit instead  of
 /// continuing.
-bool WarningEnable(const string& name, Options* options) {
+bool WarningEnable(const string& name, Options* options, BuildConfig* config) {
   if (name == "list") {
     printf("warning flags:\n"
 "  dupbuild={err,warn}  multiple build lines for one target\n"
-"  phonycycle={err,warn}  phony build statement references itself\n");
+"  phonycycle={err,warn}  phony build statement references itself\n"
+"  missingdepfile={err,warn}  how to treat missing depfiles\n");
     return false;
   } else if (name == "dupbuild=err") {
     options->dupe_edges_should_err = true;
@@ -882,10 +883,17 @@ bool WarningEnable(const string& name, Options* options) {
   } else if (name == "phonycycle=warn") {
     options->phony_cycle_should_err = false;
     return true;
+  } else if (name == "missingdepfile=err") {
+    config->missing_depfile_should_err = true;
+    return true;
+  } else if (name == "missingdepfile=warn") {
+    config->missing_depfile_should_err = false;
+    return true;
   } else {
     const char* suggestion =
         SpellcheckString(name.c_str(), "dupbuild=err", "dupbuild=warn",
-                         "phonycycle=err", "phonycycle=warn", NULL);
+                         "phonycycle=err", "phonycycle=warn",
+                         "missingdepfile=err", "missingdepfile=warn", NULL);
     if (suggestion) {
       Error("unknown warning flag '%s', did you mean '%s'?",
             name.c_str(), suggestion);
@@ -1125,7 +1133,7 @@ int ReadFlags(int* argc, char*** argv,
         config->verbosity = BuildConfig::VERBOSE;
         break;
       case 'w':
-        if (!WarningEnable(optarg, options))
+        if (!WarningEnable(optarg, options, config))
           return 1;
         break;
       case 'C':
