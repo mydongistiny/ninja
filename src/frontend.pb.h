@@ -271,6 +271,10 @@ struct Status {
     bool has_status_;
     std::string output_;
     bool has_output_;
+    uint32_t user_time_;
+    bool has_user_time_;
+    uint32_t system_time_;
+    bool has_system_time_;
 
     EdgeFinished() {
       has_id_ = false;
@@ -280,6 +284,10 @@ struct Status {
       has_status_ = false;
       status_ = static_cast< int32_t >(0);
       has_output_ = false;
+      has_user_time_ = false;
+      user_time_ = static_cast< uint32_t >(0);
+      has_system_time_ = false;
+      system_time_ = static_cast< uint32_t >(0);
     }
 
     EdgeFinished(const EdgeFinished&);
@@ -290,6 +298,8 @@ struct Status {
       WriteVarint32(output__, 2, end_time_);
       WriteVarint32(output__, 3, ZigZagEncode32(status_));
       WriteString(output__, 4, output_);
+      WriteVarint32(output__, 5, user_time_);
+      WriteVarint32(output__, 6, system_time_);
     }
 
     size_t ByteSizeLong() const {
@@ -298,6 +308,8 @@ struct Status {
       size += VarintSize32(end_time_) + 1;
       size += VarintSize32(ZigZagEncode32(status_)) + 1;
       size += StringSize(output_) + 1;
+      size += VarintSize32(user_time_) + 1;
+      size += VarintSize32(system_time_) + 1;
       return size;
     }
 
@@ -306,6 +318,8 @@ struct Status {
       end_time_ = static_cast< uint32_t >(0);
       status_ = static_cast< int32_t >(0);
       output_.clear();
+      user_time_ = static_cast< uint32_t >(0);
+      system_time_ = static_cast< uint32_t >(0);
     }
 
     uint32_t* mutable_id() {
@@ -339,6 +353,22 @@ struct Status {
     void set_output(const std::string& value) {
       has_output_ = true;
       output_ = value;
+    }
+    uint32_t* mutable_user_time() {
+      has_user_time_ = true;
+      return &user_time_;
+    }
+    void set_user_time(const uint32_t& value) {
+      has_user_time_ = true;
+      user_time_ = value;
+    }
+    uint32_t* mutable_system_time() {
+      has_system_time_ = true;
+      return &system_time_;
+    }
+    void set_system_time(const uint32_t& value) {
+      has_system_time_ = true;
+      system_time_ = value;
     }
   };
 

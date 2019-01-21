@@ -22,6 +22,10 @@
 #include <string>
 #include <vector>
 
+#ifndef _WIN32
+#include <sys/resource.h>
+#endif
+
 #include "graph.h"  // XXX needed for DependencyScan; should rearrange.
 #include "exit_status.h"
 #include "util.h"  // int64_t
@@ -109,6 +113,9 @@ struct CommandRunner {
     Result() : edge(NULL) {}
     Edge* edge;
     ExitStatus status;
+#ifndef _WIN32
+    struct rusage rusage;
+#endif
     string output;
     bool success() const { return status == ExitSuccess; }
   };

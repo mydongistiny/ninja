@@ -133,11 +133,15 @@ void Subprocess::OnPipeReady() {
   }
 }
 
+const struct rusage* Subprocess::GetUsage() const {
+  return &rusage_;
+}
+
 ExitStatus Subprocess::Finish() {
   assert(pid_ != -1);
   int status;
-  if (waitpid(pid_, &status, 0) < 0)
-    Fatal("waitpid(%d): %s", pid_, strerror(errno));
+  if (wait4(pid_, &status, 0, &rusage_) < 0)
+    Fatal("wait4(%d): %s", pid_, strerror(errno));
   pid_ = -1;
 
   if (WIFEXITED(status)) {

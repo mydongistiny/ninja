@@ -60,6 +60,10 @@ message Status {
     optional sint32 status = 3;
     // Edge output, may contain ANSI codes.
     optional string output = 4;
+    // Number of milliseconds spent executing in user mode
+    optional uint32 user_time = 5;
+    // Number of milliseconds spent executing in kernel mode
+    optional uint32 system_time = 6;
   }
 
   message Message {

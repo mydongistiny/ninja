@@ -327,6 +327,10 @@ void StatusSerializer::BuildEdgeStarted(Edge* edge, int64_t start_time_millis) {
   Send();
 }
 
+uint32_t timeval_to_ms(struct timeval tv) {
+  return tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}
+
 void StatusSerializer::BuildEdgeFinished(Edge* edge, int64_t end_time_millis,
                                          const CommandRunner::Result* result) {
   ninja::Status::EdgeFinished* edge_finished = proto_.mutable_edge_finished();
@@ -335,6 +339,8 @@ void StatusSerializer::BuildEdgeFinished(Edge* edge, int64_t end_time_millis,
   edge_finished->set_end_time(end_time_millis);
   edge_finished->set_status(result->status);
   edge_finished->set_output(result->output);
+  edge_finished->set_user_time(timeval_to_ms(result->rusage.ru_utime));
+  edge_finished->set_system_time(timeval_to_ms(result->rusage.ru_stime));
 
   Send();
 }

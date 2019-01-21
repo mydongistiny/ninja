@@ -327,6 +327,9 @@ bool RealCommandRunner::WaitForCommand(Result* result) {
   }
 
   result->status = subproc->Finish();
+#ifndef _WIN32
+  result->rusage = *subproc->GetUsage();
+#endif
   result->output = subproc->GetOutput();
 
   map<Subprocess*, Edge*>::iterator e = subproc_to_edge_.find(subproc);

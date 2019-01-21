@@ -24,6 +24,7 @@ using namespace std;
 #include <windows.h>
 #else
 #include <signal.h>
+#include <sys/resource.h>
 #endif
 
 // ppoll() exists on FreeBSD, but only on newer versions.
@@ -51,6 +52,10 @@ struct Subprocess {
 
   const string& GetOutput() const;
 
+#ifndef _WIN32
+  const struct rusage* GetUsage() const;
+#endif
+
  private:
   Subprocess(bool use_console);
   bool Start(struct SubprocessSet* set, const string& command, int extra_fd);
@@ -71,6 +76,7 @@ struct Subprocess {
 #else
   int fd_;
   pid_t pid_;
+  struct rusage rusage_;
 #endif
   bool use_console_;
 
