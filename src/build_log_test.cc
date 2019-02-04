@@ -101,9 +101,9 @@ TEST_F(BuildLogTest, FirstWriteAddsSignature) {
 
 TEST_F(BuildLogTest, DoubleEntry) {
   FILE* f = fopen(kTestFilename, "wb");
-  fprintf(f, "# ninja log v4\n");
-  fprintf(f, "0\t1\t2\tout\tcommand abc\n");
-  fprintf(f, "3\t4\t5\tout\tcommand def\n");
+  fprintf(f, "# ninja log v5\n");
+  fprintf(f, "0\t1\t2\tout\t67ab\n");
+  fprintf(f, "3\t4\t5\tout\t89cd\n");
   fclose(f);
 
   string err;
@@ -113,7 +113,7 @@ TEST_F(BuildLogTest, DoubleEntry) {
 
   BuildLog::LogEntry* e = log.LookupByOutput("out");
   ASSERT_TRUE(e);
-  ASSERT_NO_FATAL_FAILURE(AssertHash("command def", e->command_hash));
+  ASSERT_EQ(0x89cd, e->command_hash);
 }
 
 TEST_F(BuildLogTest, Truncate) {
@@ -166,34 +166,19 @@ TEST_F(BuildLogTest, ObsoleteOldVersion) {
   ASSERT_NE(err.find("version"), string::npos);
 }
 
-TEST_F(BuildLogTest, SpacesInOutputV4) {
-  FILE* f = fopen(kTestFilename, "wb");
-  fprintf(f, "# ninja log v4\n");
-  fprintf(f, "123\t456\t456\tout with space\tcommand\n");
-  fclose(f);
-
-  string err;
-  BuildLog log;
-  EXPECT_TRUE(log.Load(kTestFilename, &err));
-  ASSERT_EQ("", err);
-
-  BuildLog::LogEntry* e = log.LookupByOutput("out with space");
-  ASSERT_TRUE(e);
-  ASSERT_EQ(123, e->start_time);
-  ASSERT_EQ(456, e->end_time);
-  ASSERT_EQ(456, e->mtime);
-  ASSERT_NO_FATAL_FAILURE(AssertHash("command", e->command_hash));
-}
-
 TEST_F(BuildLogTest, DuplicateVersionHeader) {
   // Old versions of ninja accidentally wrote multiple version headers to the
   // build log on Windows. This shouldn't crash, and the second version header
   // should be ignored.
+  //
+  // This test initially tested a v4 log, but support for v4 was removed. It now
+  // tests a v5 log, but that doesn't mean that the original duplicate-header
+  // bug ever affected v5 logs.
   FILE* f = fopen(kTestFilename, "wb");
-  fprintf(f, "# ninja log v4\n");
-  fprintf(f, "123\t456\t456\tout\tcommand\n");
-  fprintf(f, "# ninja log v4\n");
-  fprintf(f, "456\t789\t789\tout2\tcommand2\n");
+  fprintf(f, "# ninja log v5\n");
+  fprintf(f, "123\t456\t456\tout\t12ab\n");
+  fprintf(f, "# ninja log v5\n");
+  fprintf(f, "456\t789\t789\tout2\t34cd\n");
   fclose(f);
 
   string err;
@@ -206,26 +191,28 @@ TEST_F(BuildLogTest, DuplicateVersionHeader) {
   ASSERT_EQ(123, e->start_time);
   ASSERT_EQ(456, e->end_time);
   ASSERT_EQ(456, e->mtime);
-  ASSERT_NO_FATAL_FAILURE(AssertHash("command", e->command_hash));
+  ASSERT_EQ(0x12ab, e->command_hash);
 
   e = log.LookupByOutput("out2");
   ASSERT_TRUE(e);
   ASSERT_EQ(456, e->start_time);
   ASSERT_EQ(789, e->end_time);
   ASSERT_EQ(789, e->mtime);
-  ASSERT_NO_FATAL_FAILURE(AssertHash("command2", e->command_hash));
+  ASSERT_EQ(0x34cd, e->command_hash);
 }
 
 TEST_F(BuildLogTest, VeryLongInputLine) {
   // Ninja's build log buffer is currently 256kB. Lines longer than that are
   // silently ignored, but don't affect parsing of other lines.
+  std::string very_long_path;
+  for (size_t i = 0; i < (512 << 10) / strlen("/more_path"); ++i)
+    very_long_path += "/more_path";
+
   FILE* f = fopen(kTestFilename, "wb");
-  fprintf(f, "# ninja log v4\n");
-  fprintf(f, "123\t456\t456\tout\tcommand start");
-  for (size_t i = 0; i < (512 << 10) / strlen(" more_command"); ++i)
-    fputs(" more_command", f);
+  fprintf(f, "# ninja log v5\n");
+  fprintf(f, "123\t456\t456\t%s\t1234abcd\n", very_long_path.c_str());
   fprintf(f, "\n");
-  fprintf(f, "456\t789\t789\tout2\tcommand2\n");
+  fprintf(f, "456\t789\t789\tout2\t2345bcde\n");
   fclose(f);
 
   string err;
@@ -233,7 +220,7 @@ TEST_F(BuildLogTest, VeryLongInputLine) {
   EXPECT_TRUE(log.Load(kTestFilename, &err));
   ASSERT_EQ("", err);
 
-  BuildLog::LogEntry* e = log.LookupByOutput("out");
+  BuildLog::LogEntry* e = log.LookupByOutput(very_long_path.c_str());
   ASSERT_EQ(NULL, e);
 
   e = log.LookupByOutput("out2");
@@ -241,7 +228,7 @@ TEST_F(BuildLogTest, VeryLongInputLine) {
   ASSERT_EQ(456, e->start_time);
   ASSERT_EQ(789, e->end_time);
   ASSERT_EQ(789, e->mtime);
-  ASSERT_NO_FATAL_FAILURE(AssertHash("command2", e->command_hash));
+  ASSERT_EQ(0x2345bcde, e->command_hash);
 }
 
 TEST_F(BuildLogTest, MultiTargetEdge) {

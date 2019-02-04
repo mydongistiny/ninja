@@ -54,7 +54,7 @@
 namespace {
 
 const char kFileSignature[] = "# ninja log v%d\n";
-const int kOldestSupportedVersion = 4;
+const int kOldestSupportedVersion = 5;
 const int kCurrentVersion = 5;
 
 // 64bit MurmurHash2, by Austin Appleby
@@ -323,14 +323,9 @@ bool BuildLog::Load(const string& path, string* err) {
     entry->start_time = start_time;
     entry->end_time = end_time;
     entry->mtime = restat_mtime;
-    if (log_version >= 5) {
-      char c = *end; *end = '\0';
-      entry->command_hash = (uint64_t)strtoull(start, NULL, 16);
-      *end = c;
-    } else {
-      entry->command_hash = LogEntry::HashCommand(StringPiece(start,
-                                                              end - start));
-    }
+    char c = *end; *end = '\0';
+    entry->command_hash = (uint64_t)strtoull(start, NULL, 16);
+    *end = c;
   }
   fclose(file);
 
