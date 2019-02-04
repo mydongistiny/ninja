@@ -91,10 +91,11 @@ void StatusPrinter::BuildEdgeFinished(Edge* edge, int64_t end_time_millis,
     // only a few hundred available on some systems, and ninja can launch
     // thousands of parallel compile commands.)
     string final_output;
-    if (!printer_.supports_color())
+    if (!printer_.supports_color()) {
       final_output = StripAnsiEscapeCodes(result->output);
-    else
+    } else {
       final_output = result->output;
+    }
 
 #ifdef _WIN32
     // Fix extra CR being added on Windows, writing out CR CR LF (#773)
