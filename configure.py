@@ -330,7 +330,8 @@ if platform.is_msvc():
         cflags += ['/Ox', '/DNDEBUG', '/GL']
         ldflags += ['/LTCG', '/OPT:REF', '/OPT:ICF']
 else:
-    cflags = ['-g', '-Wall', '-Wextra',
+    cflags = ['-std=c++11',
+              '-g', '-Wall', '-Wextra',
               '-Wno-deprecated',
               '-Wno-missing-field-initializers',
               '-Wno-unused-parameter',
@@ -361,7 +362,10 @@ else:
 
 libs = []
 
-if platform.is_mingw():
+if platform.is_linux():
+    cflags.append('-pthread')
+    ldflags.append('-pthread')
+elif platform.is_mingw():
     cflags.remove('-fvisibility=hidden');
     ldflags.append('-static')
 elif platform.is_solaris():
