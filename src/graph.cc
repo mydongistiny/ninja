@@ -344,7 +344,7 @@ bool DependencyScan::RecomputeOutputDirty(Edge* edge,
     // considered dirty if an input was modified since the previous run.
     bool used_restat = false;
     if (edge->IsRestat() && build_log() &&
-        (entry = build_log()->LookupByOutput(output->path()))) {
+        (entry = build_log()->LookupByOutput(output->path_hashed()))) {
       output_mtime = entry->mtime;
       used_restat = true;
     }
@@ -361,7 +361,7 @@ bool DependencyScan::RecomputeOutputDirty(Edge* edge,
 
   if (build_log()) {
     bool generator = edge->IsGenerator();
-    if (entry || (entry = build_log()->LookupByOutput(output->path()))) {
+    if (entry || (entry = build_log()->LookupByOutput(output->path_hashed()))) {
       if (!generator &&
           command_hash != entry->command_hash) {
         // May also be dirty due to the command changing since the last build.

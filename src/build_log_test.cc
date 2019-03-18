@@ -66,7 +66,7 @@ TEST_F(BuildLogTest, WriteRead) {
   ASSERT_TRUE(e2);
   ASSERT_TRUE(*e1 == *e2);
   ASSERT_EQ(15, e1->start_time);
-  ASSERT_EQ("out", e1->output);
+  ASSERT_EQ("out", e1->output.str());
 }
 
 TEST_F(BuildLogTest, FirstWriteAddsSignature) {
@@ -202,8 +202,7 @@ TEST_F(BuildLogTest, DuplicateVersionHeader) {
 }
 
 TEST_F(BuildLogTest, VeryLongInputLine) {
-  // Ninja's build log buffer is currently 256kB. Lines longer than that are
-  // silently ignored, but don't affect parsing of other lines.
+  // The parallelized build log parser accepts paths of arbitrary length.
   std::string very_long_path;
   for (size_t i = 0; i < (512 << 10) / strlen("/more_path"); ++i)
     very_long_path += "/more_path";
@@ -221,7 +220,11 @@ TEST_F(BuildLogTest, VeryLongInputLine) {
   ASSERT_EQ("", err);
 
   BuildLog::LogEntry* e = log.LookupByOutput(very_long_path.c_str());
-  ASSERT_EQ(NULL, e);
+  ASSERT_TRUE(e);
+  ASSERT_EQ(123, e->start_time);
+  ASSERT_EQ(456, e->end_time);
+  ASSERT_EQ(456, e->mtime);
+  ASSERT_EQ(0x1234abcd, e->command_hash);
 
   e = log.LookupByOutput("out2");
   ASSERT_TRUE(e);
@@ -243,8 +246,8 @@ TEST_F(BuildLogTest, MultiTargetEdge) {
   ASSERT_TRUE(e1);
   BuildLog::LogEntry* e2 = log.LookupByOutput("out.d");
   ASSERT_TRUE(e2);
-  ASSERT_EQ("out", e1->output);
-  ASSERT_EQ("out.d", e2->output);
+  ASSERT_EQ("out", e1->output.str());
+  ASSERT_EQ("out.d", e2->output.str());
   ASSERT_EQ(21, e1->start_time);
   ASSERT_EQ(21, e2->start_time);
   ASSERT_EQ(22, e2->end_time);
@@ -284,11 +287,11 @@ TEST_F(BuildLogRecompactTest, Recompact) {
 
   // "out2" is dead, it should've been removed.
   BuildLog log3;
-  EXPECT_TRUE(log2.Load(kTestFilename, &err));
+  EXPECT_TRUE(log3.Load(kTestFilename, &err));
   ASSERT_EQ("", err);
-  ASSERT_EQ(1u, log2.entries().size());
-  ASSERT_TRUE(log2.LookupByOutput("out"));
-  ASSERT_FALSE(log2.LookupByOutput("out2"));
+  ASSERT_EQ(1u, log3.entries().size());
+  ASSERT_TRUE(log3.LookupByOutput("out"));
+  ASSERT_FALSE(log3.LookupByOutput("out2"));
 }
 
 }  // anonymous namespace

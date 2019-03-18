@@ -22,6 +22,7 @@
 
 #include "build_log.h"
 
+#include <assert.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,9 +32,13 @@
 #include <unistd.h>
 #endif
 
+#include <numeric>
+
 #include "build.h"
+#include "disk_interface.h"
 #include "graph.h"
 #include "metrics.h"
+#include "parallel_map.h"
 #include "util.h"
 
 #ifndef FALLTHROUGH_INTENDED
@@ -56,6 +61,8 @@ namespace {
 const char kFileSignature[] = "# ninja log v%d\n";
 const int kOldestSupportedVersion = 5;
 const int kCurrentVersion = 5;
+
+const char kFieldSeparator = '\t';
 
 // 64bit MurmurHash2, by Austin Appleby
 #if defined(_MSC_VER)
@@ -104,13 +111,14 @@ uint64_t MurmurHash64A(const void* key, size_t len) {
 
 // static
 uint64_t BuildLog::LogEntry::HashCommand(StringPiece command) {
-  return MurmurHash64A(command.str_, command.len_);
+  METRIC_RECORD("hash command");
+  return MurmurHash64A(command.data(), command.size());
 }
 
-BuildLog::LogEntry::LogEntry(const string& output)
+BuildLog::LogEntry::LogEntry(const HashedStrView& output)
   : output(output) {}
 
-BuildLog::LogEntry::LogEntry(const string& output, uint64_t command_hash,
+BuildLog::LogEntry::LogEntry(const HashedStrView& output, uint64_t command_hash,
   int start_time, int end_time, TimeStamp restat_mtime)
   : output(output), command_hash(command_hash),
     start_time(start_time), end_time(end_time), mtime(restat_mtime)
@@ -156,13 +164,11 @@ bool BuildLog::RecordCommand(Edge* edge, int start_time, int end_time,
                              TimeStamp mtime) {
   string command = edge->EvaluateCommand(true);
   uint64_t command_hash = LogEntry::HashCommand(command);
-  for (vector<Node*>::iterator out = edge->outputs_.begin();
-       out != edge->outputs_.end(); ++out) {
-    const string& path = (*out)->path();
-    Entries::iterator i = entries_.find(path);
+  for (Node* out : edge->outputs_) {
+    const HashedStr& path = out->path_hashed();
     LogEntry* log_entry;
-    if (i != entries_.end()) {
-      log_entry = i->second;
+    if (LogEntry** i = entries_.Lookup(path)) {
+      log_entry = *i;
     } else {
       log_entry = new LogEntry(path);
       entries_.insert(Entries::value_type(log_entry->output, log_entry));
@@ -186,159 +192,276 @@ void BuildLog::Close() {
   log_file_ = NULL;
 }
 
-struct LineReader {
-  explicit LineReader(FILE* file)
-    : file_(file), buf_end_(buf_), line_start_(buf_), line_end_(NULL) {
-      memset(buf_, 0, sizeof(buf_));
+/// Retrieve the next tab-delimited or LF-delimited piece in the input.
+///
+/// Specifically, the function searches for a separator, starting at the given
+/// input offset. If the function finds the separator, it removes everything up
+/// to and including the separator from |*input|, places it in |*out|, and
+/// returns true. Otherwise, it zeroes |*out| and returns false.
+static bool GetNextPiece(StringPiece* input, char sep, StringPiece* out,
+                         size_t start_offset=0) {
+  assert(input != out);
+  const char* data = input->data();
+  const char* split = nullptr;
+
+  // memchr(NULL, NULL, 0) has undefined behavior, so avoid calling memchr when
+  // input->data() is nullptr. If input->size() is non-zero, its data() will be
+  // non-null.
+  if (start_offset < input->size()) {
+    split = static_cast<const char*>(
+        memchr(data + start_offset, sep, input->size() - start_offset));
   }
 
-  // Reads a \n-terminated line from the file passed to the constructor.
-  // On return, *line_start points to the beginning of the next line, and
-  // *line_end points to the \n at the end of the line. If no newline is seen
-  // in a fixed buffer size, *line_end is set to NULL. Returns false on EOF.
-  bool ReadLine(char** line_start, char** line_end) {
-    if (line_start_ >= buf_end_ || !line_end_) {
-      // Buffer empty, refill.
-      size_t size_read = fread(buf_, 1, sizeof(buf_), file_);
-      if (!size_read)
-        return false;
-      line_start_ = buf_;
-      buf_end_ = buf_ + size_read;
-    } else {
-      // Advance to next line in buffer.
-      line_start_ = line_end_ + 1;
-    }
-
-    line_end_ = (char*)memchr(line_start_, '\n', buf_end_ - line_start_);
-    if (!line_end_) {
-      // No newline. Move rest of data to start of buffer, fill rest.
-      size_t already_consumed = line_start_ - buf_;
-      size_t size_rest = (buf_end_ - buf_) - already_consumed;
-      memmove(buf_, line_start_, size_rest);
-
-      size_t read = fread(buf_ + size_rest, 1, sizeof(buf_) - size_rest, file_);
-      buf_end_ = buf_ + size_rest + read;
-      line_start_ = buf_;
-      line_end_ = (char*)memchr(line_start_, '\n', buf_end_ - line_start_);
-    }
-
-    *line_start = line_start_;
-    *line_end = line_end_;
+  if (split != nullptr) {
+    size_t len = split + 1 - data;
+    *out = input->substr(0, len);
+    *input = input->substr(len);
     return true;
+  } else {
+    *out = {};
+    return false;
   }
+}
 
- private:
-  FILE* file_;
-  char buf_[256 << 10];
-  char* buf_end_;  // Points one past the last valid byte in |buf_|.
+struct BuildLogInput {
+  std::unique_ptr<LoadedFile> file;
+  int log_version = 0;
 
-  char* line_start_;
-  // Points at the next \n in buf_ after line_start, or NULL.
-  char* line_end_;
+  // Content excluding the file header.
+  StringPiece content;
 };
 
-bool BuildLog::Load(const string& path, string* err) {
-  METRIC_RECORD(".ninja_log load");
-  FILE* file = fopen(path.c_str(), "r");
-  if (!file) {
-    if (errno == ENOENT)
-      return true;
-    *err = strerror(errno);
+static bool OpenBuildLogForReading(const std::string& path,
+                                   BuildLogInput* log,
+                                   std::string* err) {
+  *log = {};
+
+  RealDiskInterface file_reader;
+  std::string load_err;
+  switch (file_reader.LoadFile(path, &log->file, &load_err)) {
+  case FileReader::Okay:
+    break;
+  case FileReader::NotFound:
+    return true;
+  default:
+    *err = load_err;
     return false;
   }
 
-  int log_version = 0;
-  int unique_entry_count = 0;
-  int total_entry_count = 0;
+  // We need a NUL terminator after the log file's content so that we can call
+  // atoi/atol/strtoull with a pointer to within the content.
+  log->content = log->file->content_with_nul();
+  log->content.remove_suffix(1);
 
-  LineReader reader(file);
-  char* line_start = 0;
-  char* line_end = 0;
-  while (reader.ReadLine(&line_start, &line_end)) {
-    if (!log_version) {
-      sscanf(line_start, kFileSignature, &log_version);
+  StringPiece header_line;
+  if (GetNextPiece(&log->content, '\n', &header_line)) {
+    // At least with glibc, sscanf will touch every byte of the string it scans,
+    // so make a copy of the first line for sscanf to use. (Maybe sscanf is
+    // calling strlen internally?)
+    sscanf((header_line.AsString()).c_str(), kFileSignature,
+           &log->log_version);
+  }
 
-      if (log_version < kOldestSupportedVersion) {
-        *err = ("build log version invalid, perhaps due to being too old; "
-                "starting over");
-        fclose(file);
-        unlink(path.c_str());
-        // Don't report this as a failure.  An empty build log will cause
-        // us to rebuild the outputs anyway.
-        return true;
+  if (log->log_version < kOldestSupportedVersion) {
+    *err = ("build log version invalid, perhaps due to being too old; "
+            "starting over");
+    log->content = {};
+    log->file.reset();
+    unlink(path.c_str());
+    // Don't report this as a failure.  An empty build log will cause
+    // us to rebuild the outputs anyway.
+  }
+
+  return true;
+}
+
+/// Split the build log's content (i.e. the lines excluding the header) into
+/// chunks. Each chunk is guaranteed to end with a newline character. Any output
+/// beyond the end of the last newline is quietly discarded.
+static std::vector<StringPiece> SplitBuildLog(StringPiece content) {
+  // The log file should end with an LF character, but if it doesn't, start by
+  // stripping off non-LF characters.
+  while (!content.empty() && content.back() != '\n') {
+    content.remove_suffix(1);
+  }
+
+  size_t ideal_chunk_count = GetOptimalThreadPoolJobCount();
+  size_t ideal_chunk_size = content.size() / ideal_chunk_count + 1;
+
+  std::vector<StringPiece> result;
+  StringPiece chunk;
+  while (GetNextPiece(&content, '\n', &chunk, ideal_chunk_size)) {
+    result.push_back(chunk);
+  }
+  if (!content.empty()) {
+    result.push_back(content);
+  }
+
+  return result;
+}
+
+/// Call the given function on each line in the given chunk. The chunk must end
+/// with an LF character. The LF characters are included in the string views
+/// passed to the callback.
+template <typename Func>
+static void VisitEachLineInChunk(StringPiece chunk, Func func) {
+  assert(!chunk.empty() && chunk.back() == '\n');
+  StringPiece line;
+  while (GetNextPiece(&chunk, '\n', &line)) {
+    func(line);
+  }
+}
+
+/// Count the number of LF newline characters in the string. The string is
+/// guaranteed to end with an LF.
+static size_t CountNewlinesInChunk(StringPiece chunk) {
+  size_t line_count = 0;
+  VisitEachLineInChunk(chunk, [&line_count](StringPiece line) {
+    ++line_count;
+  });
+  return line_count;
+}
+
+struct ParsedLine {
+  /// These fields are guaranteed to be followed by a whitespace character
+  /// (either a tab or an LF), but the whitespace terminator isn't explicitly
+  /// part of the string piece.
+  StringPiece start_time;
+  StringPiece end_time;
+  StringPiece mtime;
+  StringPiece path;
+  StringPiece command_hash;
+};
+
+/// Given a single line of the build log (including the terminator LF), split
+/// the line into its various tab-delimited fields.
+static inline bool SplitLine(StringPiece line, ParsedLine* out) {
+  assert(!line.empty() && line.back() == '\n');
+  line.remove_suffix(1);
+
+  auto get_next_field = [&line](StringPiece* out_piece) {
+    // Extract the next piece from the line. If we're successful, remove the
+    // field separator from the end of the piece.
+    if (!GetNextPiece(&line, kFieldSeparator, out_piece)) return false;
+    assert(!out_piece->empty() && out_piece->back() == kFieldSeparator);
+    out_piece->remove_suffix(1);
+    return true;
+  };
+
+  *out = {};
+  if (!get_next_field(&out->start_time)) return false;
+  if (!get_next_field(&out->end_time)) return false;
+  if (!get_next_field(&out->mtime)) return false;
+  if (!get_next_field(&out->path)) return false;
+  out->command_hash = line;
+
+  return true;
+}
+
+/// Given a single line of the build log (including the terminator LF), return
+/// just the path field.
+static StringPiece GetPathForLine(StringPiece line) {
+  ParsedLine parsed_line;
+  return SplitLine(line, &parsed_line) ? parsed_line.path : StringPiece();
+}
+
+bool BuildLog::Load(const string& path, string* err) {
+  METRIC_RECORD(".ninja_log load");
+  assert(entries_.empty());
+
+  BuildLogInput log;
+  if (!OpenBuildLogForReading(path, &log, err)) return false;
+  if (log.file.get() == nullptr) return true;
+
+  std::vector<StringPiece> chunks = SplitBuildLog(log.content);
+  std::unique_ptr<ThreadPool> thread_pool = CreateThreadPool();
+
+  // The concurrent hashmap doesn't automatically resize when entries are added
+  // to it, so we need to reserve space in advance. The number of newlines
+  // should exceed the number of distinct paths in the build log by a small
+  // factor.
+  size_t line_count = 0;
+  for (size_t count :
+      ParallelMap(thread_pool.get(), chunks, CountNewlinesInChunk)) {
+    line_count += count;
+  }
+  entries_.reserve(line_count);
+
+  // Construct an initial table of path -> LogEntry. Each LogEntry is
+  // initialized with the newest record for a particular path. Build a list of
+  // each chunk's new log entries.
+  std::vector<std::vector<LogEntry*>> chunk_new_entries =
+      ParallelMap(thread_pool.get(), chunks, [this, &log](StringPiece chunk) {
+    std::vector<LogEntry*> chunk_entries_list;
+    VisitEachLineInChunk(chunk, [&](StringPiece line) {
+      HashedStrView path = GetPathForLine(line);
+      if (path.empty()) return;
+      LogEntry* entry = nullptr;
+      if (LogEntry** entry_it = entries_.Lookup(path)) {
+        entry = *entry_it;
+      } else {
+        std::unique_ptr<LogEntry> new_entry(new LogEntry(path));
+        new_entry->newest_parsed_line = line.data() - log.content.data();
+        if (entries_.insert({ new_entry->output, new_entry.get() }).second) {
+          chunk_entries_list.push_back(new_entry.release());
+          return;
+        } else {
+          // Another thread beat us to it. Update the existing entry instead.
+          LogEntry** entry_it = entries_.Lookup(path);
+          assert(entry_it != nullptr);
+          entry = *entry_it;
+        }
       }
+      AtomicUpdateMaximum<size_t>(&entry->newest_parsed_line,
+                                  line.data() - log.content.data());
+    });
+    return chunk_entries_list;
+  });
+
+  // Collect all the log entries into a flat vector so we can distribute the
+  // final parsing work. This list has a non-deterministic order when a node
+  // appears in multiple chunks.
+  std::vector<LogEntry*> entries_vec;
+  entries_vec.reserve(entries_.size());
+  for (auto& chunk : chunk_new_entries) {
+    std::move(chunk.begin(), chunk.end(), std::back_inserter(entries_vec));
+  }
+
+  // Finish parsing the log entries.
+  ParallelMap(thread_pool.get(), entries_vec, [&log](LogEntry* entry) {
+    // Locate the end of the line. The end of the line wasn't stored in the log
+    // entry because that would complicate the atomic line location updating.
+    assert(entry->newest_parsed_line < log.content.size());
+    StringPiece line_to_end = log.content.substr(entry->newest_parsed_line);
+    StringPiece line;
+    if (!GetNextPiece(&line_to_end, '\n', &line)) {
+      assert(false && "build log changed during parsing");
+      abort();
     }
 
-    // If no newline was found in this chunk, read the next.
-    if (!line_end)
-      continue;
-
-    const char kFieldSeparator = '\t';
-
-    char* start = line_start;
-    char* end = (char*)memchr(start, kFieldSeparator, line_end - start);
-    if (!end)
-      continue;
-    *end = 0;
-
-    int start_time = 0, end_time = 0;
-    TimeStamp restat_mtime = 0;
-
-    start_time = atoi(start);
-    start = end + 1;
-
-    end = (char*)memchr(start, kFieldSeparator, line_end - start);
-    if (!end)
-      continue;
-    *end = 0;
-    end_time = atoi(start);
-    start = end + 1;
-
-    end = (char*)memchr(start, kFieldSeparator, line_end - start);
-    if (!end)
-      continue;
-    *end = 0;
-    restat_mtime = atol(start);
-    start = end + 1;
-
-    end = (char*)memchr(start, kFieldSeparator, line_end - start);
-    if (!end)
-      continue;
-    string output = string(start, end - start);
-
-    start = end + 1;
-    end = line_end;
-
-    LogEntry* entry;
-    Entries::iterator i = entries_.find(output);
-    if (i != entries_.end()) {
-      entry = i->second;
-    } else {
-      entry = new LogEntry(output);
-      entries_.insert(Entries::value_type(entry->output, entry));
-      ++unique_entry_count;
+    ParsedLine parsed_line {};
+    if (!SplitLine(line, &parsed_line)) {
+      assert(false && "build log changed during parsing");
+      abort();
     }
-    ++total_entry_count;
 
-    entry->start_time = start_time;
-    entry->end_time = end_time;
-    entry->mtime = restat_mtime;
-    char c = *end; *end = '\0';
-    entry->command_hash = (uint64_t)strtoull(start, NULL, 16);
-    *end = c;
-  }
-  fclose(file);
+    // Initialize the entry object.
+    entry->start_time = atoi(parsed_line.start_time.data());
+    entry->end_time = atoi(parsed_line.end_time.data());
+    entry->mtime = atol(parsed_line.mtime.data());
+    entry->command_hash = static_cast<uint64_t>(
+        strtoull(parsed_line.command_hash.data(), nullptr, 16));
+  });
 
-  if (!line_start) {
-    return true; // file was empty
-  }
+  int total_entry_count = line_count;
+  int unique_entry_count = entries_vec.size();
 
   // Decide whether it's time to rebuild the log:
   // - if we're upgrading versions
   // - if it's getting large
-  int kMinCompactionEntryCount = 100;
-  int kCompactionRatio = 3;
-  if (log_version < kCurrentVersion) {
+  const int kMinCompactionEntryCount = 100;
+  const int kCompactionRatio = 3;
+  if (log.log_version < kCurrentVersion) {
     needs_recompaction_ = true;
   } else if (total_entry_count > kMinCompactionEntryCount &&
              total_entry_count > unique_entry_count * kCompactionRatio) {
@@ -348,11 +471,10 @@ bool BuildLog::Load(const string& path, string* err) {
   return true;
 }
 
-BuildLog::LogEntry* BuildLog::LookupByOutput(const string& path) {
-  Entries::iterator i = entries_.find(path);
-  if (i != entries_.end())
-    return i->second;
-  return NULL;
+BuildLog::LogEntry* BuildLog::LookupByOutput(const HashedStrView& path) {
+  if (LogEntry** i = entries_.Lookup(path))
+    return *i;
+  return nullptr;
 }
 
 bool BuildLog::WriteEntry(FILE* f, const LogEntry& entry) {
@@ -379,22 +501,23 @@ bool BuildLog::Recompact(const string& path, const BuildLogUser& user,
     return false;
   }
 
-  vector<StringPiece> dead_outputs;
-  for (Entries::iterator i = entries_.begin(); i != entries_.end(); ++i) {
-    if (user.IsPathDead(i->first)) {
-      dead_outputs.push_back(i->first);
-      continue;
-    }
+  Entries new_entries;
+  new_entries.reserve(std::max(entries_.size(), entries_.bucket_count()));
 
-    if (!WriteEntry(f, *i->second)) {
+  for (const std::pair<HashedStrView, LogEntry*>& pair : entries_) {
+    if (user.IsPathDead(pair.first.str_view()))
+      continue;
+
+    new_entries.insert(pair);
+
+    if (!WriteEntry(f, *pair.second)) {
       *err = strerror(errno);
       fclose(f);
       return false;
     }
   }
 
-  for (size_t i = 0; i < dead_outputs.size(); ++i)
-    entries_.erase(dead_outputs[i]);
+  entries_.swap(new_entries);
 
   fclose(f);
   if (unlink(path.c_str()) < 0) {

@@ -16,11 +16,11 @@
 #define NINJA_BUILD_LOG_H_
 
 #include <string>
-#include <unordered_map>
 #include <stdio.h>
 using namespace std;
 
-#include "hash_map.h"
+#include "hashed_str_view.h"
+#include "concurrent_hash_map.h"
 #include "timestamp.h"
 #include "util.h"  // uint64_t
 
@@ -53,11 +53,14 @@ struct BuildLog {
   bool Load(const string& path, string* err);
 
   struct LogEntry {
-    string output;
+    HashedStr output;
     uint64_t command_hash;
     int start_time;
     int end_time;
     TimeStamp mtime;
+
+    // Used during build log parsing.
+    std::atomic<size_t> newest_parsed_line;
 
     static uint64_t HashCommand(StringPiece command);
 
@@ -68,13 +71,13 @@ struct BuildLog {
           mtime == o.mtime;
     }
 
-    explicit LogEntry(const string& output);
-    LogEntry(const string& output, uint64_t command_hash,
+    explicit LogEntry(const HashedStrView& output);
+    LogEntry(const HashedStrView& output, uint64_t command_hash,
              int start_time, int end_time, TimeStamp restat_mtime);
   };
 
   /// Lookup a previously-run command by its output path.
-  LogEntry* LookupByOutput(const string& path);
+  LogEntry* LookupByOutput(const HashedStrView& path);
 
   /// Serialize an entry into a log file.
   bool WriteEntry(FILE* f, const LogEntry& entry);
@@ -82,7 +85,10 @@ struct BuildLog {
   /// Rewrite the known log entries, throwing away old data.
   bool Recompact(const string& path, const BuildLogUser& user, string* err);
 
-  typedef std::unordered_map<StringPiece, LogEntry*> Entries;
+  /// The HashedStrView refers to memory in the LogEntry itself. This map uses
+  /// a value of LogEntry* rather than LogEntry, because moving a LogEntry would
+  /// invalidate the HashedStrView.
+  typedef ConcurrentHashMap<HashedStrView, LogEntry*> Entries;
   const Entries& entries() const { return entries_; }
 
  private:
