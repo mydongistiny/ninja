@@ -119,13 +119,6 @@ TEST_F(DepsLogTest, LotsOfDeps) {
 
   State state2;
   DepsLog log2;
-
-  // The paths_ concurrent hash table doesn't automatically resize itself, and
-  // the deps log reader doesn't currently reserve space in the table, so
-  // reserve some space in advance. The parallel deps log parser avoids this
-  // problem.
-  state2.paths_.reserve(kNumDeps);
-
   EXPECT_TRUE(log2.Load(kTestFilename, &state2, &err));
   ASSERT_EQ("", err);
 
