@@ -15,6 +15,8 @@
 #ifndef NINJA_METRICS_H_
 #define NINJA_METRICS_H_
 
+#include <atomic>
+#include <mutex>
 #include <string>
 #include <vector>
 using namespace std;
@@ -26,21 +28,68 @@ using namespace std;
 
 /// A single metrics we're tracking, like "depfile load time".
 struct Metric {
-  string name;
-  /// Number of times we've hit the code path.
-  int count;
-  /// Total time (in micros) we've spent on the code path.
-  int64_t sum;
-};
+  Metric(const std::string& name) : name_(name) {}
 
+  void AddResult(int count, int64_t time_us) {
+    thread_local size_t this_slot = GetThreadSlotIndex();
+    Slot& slot = slots_[this_slot];
+    slot.count += count;
+    slot.time += time_us;
+  }
 
-/// A scoped object for recording a metric across the body of a function.
-/// Used by the METRIC_RECORD macro.
-struct ScopedMetric {
-  explicit ScopedMetric(Metric* metric);
-  ~ScopedMetric();
+  const std::string& name() const { return name_; }
+
+  int count() const {
+    int result = 0;
+    for (const Slot& slot : slots_) {
+      result += slot.count;
+    }
+    return result;
+  }
+
+  int64_t time() const {
+    int64_t result = 0;
+    for (const Slot& slot : slots_) {
+      result += slot.time;
+    }
+    return result;
+  }
 
 private:
+  /// Try to give each thread a different slot to reduce thread contention.
+  struct NINJA_ALIGNAS_CACHE_LINE Slot {
+    /// Number of times we've hit the code path.
+    std::atomic<int> count {};
+    /// Total time (in micros) we've spent on the code path.
+    std::atomic<int64_t> time {};
+  };
+
+  std::string name_;
+  std::vector<Slot> slots_ { GetThreadSlotCount() };
+};
+
+/// A scoped object for recording a metric across the body of a function.
+/// Used by the METRIC_RECORD macro. Inline the metric_ null check to minimize
+/// the effect on the typical case where metrics are disabled.
+struct ScopedMetric {
+  explicit ScopedMetric(Metric* metric) : metric_(metric) {
+    if (metric_ == nullptr) {
+      return;
+    }
+    RecordStart();
+  }
+
+  ~ScopedMetric() {
+    if (metric_ == nullptr) {
+      return;
+    }
+    RecordResult();
+  }
+
+private:
+  void RecordStart();
+  void RecordResult();
+
   Metric* metric_;
   /// Timestamp when the measurement started.
   /// Value is platform-dependent.
@@ -55,6 +104,7 @@ struct Metrics {
   void Report();
 
 private:
+  std::mutex mutex_;
   vector<Metric*> metrics_;
 };
 

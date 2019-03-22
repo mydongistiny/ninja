@@ -75,34 +75,29 @@ int64_t TimerToMicros(int64_t dt) {
 }  // anonymous namespace
 
 
-ScopedMetric::ScopedMetric(Metric* metric) {
-  metric_ = metric;
-  if (!metric_)
-    return;
+void ScopedMetric::RecordStart() {
   start_ = HighResTimer();
 }
-ScopedMetric::~ScopedMetric() {
-  if (!metric_)
-    return;
-  metric_->count++;
-  int64_t dt = TimerToMicros(HighResTimer() - start_);
-  metric_->sum += dt;
+
+void ScopedMetric::RecordResult() {
+  int64_t duration = TimerToMicros(HighResTimer() - start_);
+  metric_->AddResult(1, duration);
 }
 
 Metric* Metrics::NewMetric(const string& name) {
-  Metric* metric = new Metric;
-  metric->name = name;
-  metric->count = 0;
-  metric->sum = 0;
-  metrics_.push_back(metric);
-  return metric;
+  std::lock_guard<std::mutex> lock(mutex_);
+  Metric* result = new Metric(name);
+  metrics_.push_back(result);
+  return result;
 }
 
 void Metrics::Report() {
+  std::lock_guard<std::mutex> lock(mutex_);
+
   int width = 0;
   for (vector<Metric*>::iterator i = metrics_.begin();
        i != metrics_.end(); ++i) {
-    width = max((int)(*i)->name.size(), width);
+    width = max((int)(*i)->name().size(), width);
   }
 
   printf("%-*s\t%-6s\t%-9s\t%s\n", width,
@@ -110,10 +105,10 @@ void Metrics::Report() {
   for (vector<Metric*>::iterator i = metrics_.begin();
        i != metrics_.end(); ++i) {
     Metric* metric = *i;
-    double total = metric->sum / (double)1000;
-    double avg = metric->sum / (double)metric->count;
-    printf("%-*s\t%-6d\t%-8.1f\t%.1f\n", width, metric->name.c_str(),
-           metric->count, avg, total);
+    double total = metric->time() / (double)1000;
+    double avg = metric->time() / (double)metric->count();
+    printf("%-*s\t%-6d\t%-8.1f\t%.1f\n", width, metric->name().c_str(),
+           metric->count(), avg, total);
   }
 }
 

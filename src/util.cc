@@ -38,6 +38,7 @@
 #include <sys/time.h>
 #endif
 
+#include <atomic>
 #include <vector>
 
 #if defined(__APPLE__) || defined(__FreeBSD__)
@@ -633,4 +634,18 @@ bool Truncate(const string& path, size_t size, string* err) {
     return false;
   }
   return true;
+}
+
+size_t GetThreadSlotCount() {
+  static size_t result = std::max<size_t>(1, GetProcessorCount());
+  return result;
+}
+
+size_t GetThreadSlotIndex() {
+  static std::atomic<size_t> counter {};
+  thread_local size_t result = []() {
+    size_t result = ++counter;
+    return result % GetThreadSlotCount();
+  }();
+  return result;
 }

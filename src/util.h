@@ -118,4 +118,25 @@ string GetLastErrorString();
 NORETURN void Win32Fatal(const char* function);
 #endif
 
+/// Assign each thread a "slot" within a fixed number of slots. The number of
+/// slots, and each thread's slot index, is fixed until the program exits.
+size_t GetThreadSlotCount();
+size_t GetThreadSlotIndex();
+
+/// False sharing between CPU cores can have a measurable effect on ninja
+/// performance. Avoid it by overaligning some frequently-accessed data
+/// structures, which ensures that different copies of a struct are on different
+/// cache lines. A typical L1 cache line size is 64 bytes. Perhaps this code
+/// could eventually use std::hardware_destructive_interference_size from C++17,
+/// but that constant is currently missing from libc++.
+///
+/// This overalignment is only done with C++17 to avoid confusion. In previous
+/// C++ versions, operator new didn't support overalignment. (See WG21 paper
+/// P0035R4.)
+#if __cplusplus >= 201703L
+#define NINJA_ALIGNAS_CACHE_LINE alignas(64)
+#else
+#define NINJA_ALIGNAS_CACHE_LINE
+#endif
+
 #endif  // NINJA_UTIL_H_
