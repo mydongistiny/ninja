@@ -33,7 +33,13 @@ ManifestParser::ManifestParser(State* state, FileReader* file_reader,
 }
 
 bool ManifestParser::Load(const string& filename, string* err, Lexer* parent) {
+  // Delegate to LoadImpl so we don't sum overlapping parser run-times, which
+  // makes the metrics harder to use.
   METRIC_RECORD(".ninja parse");
+  return LoadImpl(filename, err, parent);
+}
+
+bool ManifestParser::LoadImpl(const string& filename, string* err, Lexer* parent) {
   string contents;
   string read_err;
   if (file_reader_->ReadFile(filename, &contents, &read_err) != FileReader::Okay) {
@@ -426,7 +432,7 @@ bool ManifestParser::ParseFileInclude(bool new_scope, string* err) {
     subparser.env_ = env_;
   }
 
-  if (!subparser.Load(path, err, &lexer_))
+  if (!subparser.LoadImpl(path, err, &lexer_))
     return false;
 
   if (!ExpectToken(Lexer::NEWLINE, err))

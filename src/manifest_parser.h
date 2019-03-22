@@ -49,7 +49,7 @@ struct ManifestParser {
   ManifestParser(State* state, FileReader* file_reader,
                  ManifestParserOptions options = ManifestParserOptions());
 
-  /// Load and parse a file.
+  /// Load and parse a file. Delegates everything to LoadImpl.
   bool Load(const string& filename, string* err, Lexer* parent = NULL);
 
   /// Parse a text string of input.  Used by tests.
@@ -59,6 +59,9 @@ struct ManifestParser {
   }
 
 private:
+  /// Load and parse a file.
+  bool LoadImpl(const string& filename, string* err, Lexer* parent = NULL);
+
   /// Parse a file, given its contents as a string.
   bool Parse(const string& filename, const string& input, string* err);
 
