@@ -224,7 +224,8 @@ int Cleaner::CleanRule(const char* rule) {
   assert(rule);
 
   Reset();
-  const Rule* r = state_->bindings_.LookupRule(rule);
+  ScopePosition end_of_root { &state_->root_scope_, kLastDeclIndex };
+  const Rule* r = Scope::LookupRuleAtPos(rule, end_of_root);
   if (r) {
     CleanRule(r);
   } else {
@@ -241,7 +242,8 @@ int Cleaner::CleanRules(int rule_count, char* rules[]) {
   PrintHeader();
   for (int i = 0; i < rule_count; ++i) {
     const char* rule_name = rules[i];
-    const Rule* rule = state_->bindings_.LookupRule(rule_name);
+    ScopePosition end_of_root { &state_->root_scope_, kLastDeclIndex };
+    const Rule* rule = Scope::LookupRuleAtPos(rule_name, end_of_root);
     if (rule) {
       if (IsVerbose())
         printf("Rule %s\n", rule_name);

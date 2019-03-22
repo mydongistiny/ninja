@@ -479,3 +479,35 @@ TEST_F(GraphTest, Decanonicalize) {
   EXPECT_EQ(root_nodes[3]->PathDecanonicalized(), "out4\\foo");
 }
 #endif
+
+TEST_F(GraphTest, EdgeVarEvalPhase) {
+  // Variable lookups on edges can happen in one of two phases:
+  //  - Parse-time: Only bindings declared before the reference are visible.
+  //  - Final-scope: All bindings in the current scope (and ancestor scopes)
+  //    are visible.
+  //
+  // An edge's pool is determined at parse-time, while most other bindings are
+  // looked up after manifest parsing is finished.
+
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"foo = A\n"
+"bar = B\n"
+"pool A\n"
+"  depth = 3\n"
+"pool C\n"
+"  depth = 3\n"
+"rule echo\n"
+"  command = replaced by next line\n"
+"  command = echo $foo,$bar\n"
+"  pool = $foo\n"
+"build a: echo\n"
+"  bar = replaced by next line\n"
+"  bar = edge:$foo\n"
+"foo = C\n"
+"bar = D\n"));
+
+  Edge* edge = GetNode("a")->in_edge();
+  EXPECT_EQ("echo C,edge:A", edge->GetBinding("command"));
+  EXPECT_EQ("A", edge->pool()->name());
+  EXPECT_EQ("C", edge->GetBinding("pool"));
+}

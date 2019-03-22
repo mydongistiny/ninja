@@ -16,10 +16,63 @@
 #define NINJA_DISK_INTERFACE_H_
 
 #include <map>
+#include <memory>
 #include <string>
 using namespace std;
 
+#include "string_piece.h"
 #include "timestamp.h"
+
+/// A file whose content has been loaded into memory.
+struct LoadedFile {
+  LoadedFile() {}
+
+  LoadedFile(const LoadedFile&) = delete;
+  LoadedFile& operator=(const LoadedFile&) = delete;
+
+  virtual ~LoadedFile() {}
+
+  const std::string& filename() const { return filename_; }
+
+  /// Return the size of the file's content, excluding the extra NUL at the end.
+  size_t size() const { return content_with_nul_.size() - 1; }
+
+  /// Return the file content, excluding the extra NUL at the end.
+  StringPiece content() const {
+    return content_with_nul_.substr(0, content_with_nul_.size() - 1);
+  }
+
+  /// The last character of this StringPiece will be NUL. (i.e. The size of this
+  /// view will be 1 greater than the true file size.)
+  StringPiece content_with_nul() const { return content_with_nul_; }
+
+protected:
+  std::string filename_;
+
+  /// The start of the string view must be aligned sufficiently for any basic
+  /// type it may contain (e.g. a minimum alignment of 16 bytes is typical). The
+  /// alignment minimum is necessary for parsing the 4-byte aligned binary
+  /// .ninja_deps log.
+  StringPiece content_with_nul_;
+};
+
+/// An implementation of LoadedFile where the file's content is copied into a
+/// char[] array. This class adds a NUL to the given string.
+struct HeapLoadedFile : LoadedFile {
+  HeapLoadedFile(const std::string& filename, StringPiece content) {
+    filename_ = filename;
+    // An array allocated with new char[N] is guaranteed to be sufficiently
+    // aligned for any fundamental type.
+    storage_.reset(new char[content.size() + 1]);
+    memcpy(storage_.get(), content.data(), content.size());
+    storage_[content.size()] = '\0';
+    content_with_nul_ = StringPiece(storage_.get(), content.size() + 1);
+  }
+
+private:
+  /// Use new char[] to provide the alignment guarantee this class needs.
+  std::unique_ptr<char[]> storage_;
+};
 
 /// Interface for reading files from disk.  See DiskInterface for details.
 /// This base offers the minimum interface needed just to read files.
@@ -37,6 +90,12 @@ struct FileReader {
   /// On error, return another Status and fill |err|.
   virtual Status ReadFile(const string& path, string* contents,
                           string* err) = 0;
+
+  /// Open the file for reading and return an abstract LoadedFile. On success,
+  /// return Okay. On error, return another Status and fill |err|.
+  virtual Status LoadFile(const std::string& path,
+                          std::unique_ptr<LoadedFile>* result,
+                          std::string* err) = 0;
 };
 
 /// Interface for accessing the disk.
@@ -79,6 +138,9 @@ struct RealDiskInterface : public DiskInterface {
   virtual bool MakeDir(const string& path);
   virtual bool WriteFile(const string& path, const string& contents);
   virtual Status ReadFile(const string& path, string* contents, string* err);
+  virtual Status LoadFile(const std::string& path,
+                          std::unique_ptr<LoadedFile>* result,
+                          std::string* err);
   virtual int RemoveFile(const string& path);
 
   /// Whether stat information can be cached.  Only has an effect on Windows.

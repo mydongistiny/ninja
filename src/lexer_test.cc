@@ -18,28 +18,30 @@
 #include "test.h"
 
 TEST(Lexer, ReadVarValue) {
-  Lexer lexer("plain text $var $VaR ${x}\n");
-  EvalString eval;
-  string err;
-  EXPECT_TRUE(lexer.ReadVarValue(&eval, &err));
+  Lexer lexer("plain text $var $VaR ${x}\nmore text");
+  StringPiece uneval;
+  std::string err;
+  EXPECT_TRUE(lexer.ReadBindingValue(&uneval, &err));
   EXPECT_EQ("", err);
-  EXPECT_EQ("[plain text ][$var][ ][$VaR][ ][$x]",
-            eval.Serialize());
+  EXPECT_EQ("plain text $var $VaR ${x}\n", uneval.AsString());
+  std::string eval = EvaluateBindingForTesting(uneval);
+  EXPECT_EQ("plain text [$var] [$VaR] [$x]", eval);
 }
 
 TEST(Lexer, ReadEvalStringEscapes) {
-  Lexer lexer("$ $$ab c$: $\ncde\n");
-  EvalString eval;
-  string err;
-  EXPECT_TRUE(lexer.ReadVarValue(&eval, &err));
+  Lexer lexer("$ $$ab c$: $\ncde\nmore text");
+  StringPiece uneval;
+  std::string err;
+  EXPECT_TRUE(lexer.ReadBindingValue(&uneval, &err));
   EXPECT_EQ("", err);
-  EXPECT_EQ("[ $ab c: cde]",
-            eval.Serialize());
+  EXPECT_EQ("$ $$ab c$: $\ncde\n", uneval.AsString());
+  std::string eval = EvaluateBindingForTesting(uneval);
+  EXPECT_EQ(" $ab c: cde", eval);
 }
 
 TEST(Lexer, ReadIdent) {
   Lexer lexer("foo baR baz_123 foo-bar");
-  string ident;
+  StringPiece ident;
   EXPECT_TRUE(lexer.ReadIdent(&ident));
   EXPECT_EQ("foo", ident);
   EXPECT_TRUE(lexer.ReadIdent(&ident));
@@ -54,23 +56,71 @@ TEST(Lexer, ReadIdentCurlies) {
   // Verify that ReadIdent includes dots in the name,
   // but in an expansion $bar.dots stops at the dot.
   Lexer lexer("foo.dots $bar.dots ${bar.dots}\n");
-  string ident;
+  StringPiece ident;
   EXPECT_TRUE(lexer.ReadIdent(&ident));
   EXPECT_EQ("foo.dots", ident);
 
-  EvalString eval;
+  StringPiece uneval;
   string err;
-  EXPECT_TRUE(lexer.ReadVarValue(&eval, &err));
+  EXPECT_TRUE(lexer.ReadBindingValue(&uneval, &err));
   EXPECT_EQ("", err);
-  EXPECT_EQ("[$bar][.dots ][$bar.dots]",
-            eval.Serialize());
+  EXPECT_EQ("$bar.dots ${bar.dots}\n", uneval.AsString());
+  std::string eval = EvaluateBindingForTesting(uneval);
+  EXPECT_EQ("[$bar].dots [$bar.dots]", eval);
+}
+
+TEST(Lexer, PeekCanonicalPath) {
+  auto peek_canon = [](const char* pattern) {
+    Lexer lexer(pattern);
+    return lexer.PeekCanonicalPath().AsString();
+  };
+  EXPECT_EQ("", peek_canon(""));
+  EXPECT_EQ("", peek_canon(" : "));
+  EXPECT_EQ("", peek_canon("/ : "));
+  EXPECT_EQ("", peek_canon("/foo/ : "));
+  EXPECT_EQ("", peek_canon("/foo/../bar : "));
+  EXPECT_EQ("", peek_canon("/../foo/bar : "));
+
+  EXPECT_EQ("", peek_canon("foo$$bar : "));
+  EXPECT_EQ("", peek_canon("foo${bar}baz : "));
+
+  EXPECT_EQ("/foo", peek_canon("/foo : "));
+  EXPECT_EQ("/foo/bar", peek_canon("/foo/bar : "));
+  EXPECT_EQ("foo", peek_canon("foo : "));
+  EXPECT_EQ("foo/bar", peek_canon("foo/bar : "));
+  EXPECT_EQ("../foo/bar", peek_canon("../foo/bar : "));
+  EXPECT_EQ("../../foo/bar", peek_canon("../../foo/bar : "));
+
+  EXPECT_EQ("foo", peek_canon("./foo : "));
+  EXPECT_EQ("../../foo/bar", peek_canon("./../../foo/bar : "));
+}
+
+TEST(Lexer, ReadPath) {
+  Lexer lexer("x$$y$ z$:: $bar.dots\n");
+  std::string err;
+  LexedPath uneval;
+  std::string eval;
+
+  EXPECT_TRUE(lexer.ReadPath(&uneval, &err));
+  EXPECT_EQ("", err);
+  EXPECT_EQ("x$$y$ z$:", uneval.str_.AsString());
+  eval = EvaluatePathForTesting(uneval);
+  EXPECT_EQ("x$y z:", eval);
+
+  EXPECT_EQ(Lexer::COLON, lexer.ReadToken());
+
+  EXPECT_TRUE(lexer.ReadPath(&uneval, &err));
+  EXPECT_EQ("", err);
+  EXPECT_EQ("$bar.dots", uneval.str_.AsString());
+  eval = EvaluatePathForTesting(uneval);
+  EXPECT_EQ("[$bar].dots", eval);
 }
 
 TEST(Lexer, Error) {
   Lexer lexer("foo$\nbad $");
-  EvalString eval;
+  StringPiece uneval;
   string err;
-  ASSERT_FALSE(lexer.ReadVarValue(&eval, &err));
+  ASSERT_FALSE(lexer.ReadBindingValue(&uneval, &err));
   EXPECT_EQ("input:2: bad $-escape (literal $ must be written as $$)\n"
             "bad $\n"
             "    ^ near here"
@@ -93,4 +143,41 @@ TEST(Lexer, Tabs) {
   token = lexer.ReadToken();
   EXPECT_EQ(Lexer::ERROR, token);
   EXPECT_EQ("tabs are not allowed, use spaces", lexer.DescribeLastError());
+}
+
+TEST(Lexer, AdvanceToNextManifestChunk) {
+  auto advance = [](std::string input) -> std::string {
+    // The input string may optionally have a '^' marking where the lexer should
+    // start scanning for a chunk.
+    size_t idx = input.find_first_of('^');
+    if (idx == std::string::npos) {
+      idx = 0;
+    } else {
+      input = input.substr(0, idx) + input.substr(idx + 1);
+    }
+    idx = AdvanceToNextManifestChunk(input, idx);
+    // The return string has a '^' marking where the manifest was split.
+    return input.substr(0, idx) + "^" + input.substr(idx);
+  };
+
+  EXPECT_EQ("^", advance(""));
+  EXPECT_EQ("A\n^B\n", advance("A\nB\n"));
+  EXPECT_EQ("\n^B\n", advance("\nB\n"));
+  EXPECT_EQ("\0\0\0^"_s, advance("\0\0\0"_s));
+
+  // An LF preceded by "$" or "$\r" might be part of a line continuator, so we
+  // skip it when looking for a place to split the manifest.
+  EXPECT_EQ("A$\nB\n^C", advance("^A$\nB\nC"));
+  EXPECT_EQ("A$\nB\n^C", advance("A^$\nB\nC"));
+  EXPECT_EQ("A$\nB\n^C", advance("A$^\nB\nC"));
+  EXPECT_EQ("A$\r\nB\n^C", advance("^A$\r\nB\nC"));
+  EXPECT_EQ("A$\r\nB\n^C", advance("A^$\r\nB\nC"));
+  EXPECT_EQ("A$\r\nB\n^C", advance("A$^\r\nB\nC"));
+  EXPECT_EQ("A$\r\nB\n^C", advance("A$\r^\nB\nC"));
+
+  // Skip over blank lines and comment lines.
+  EXPECT_EQ("\n^", advance("\n"));
+  EXPECT_EQ("\n\n^A\n", advance("\n\nA\n"));
+  EXPECT_EQ("\n \n^A", advance("\n \nA"));
+  EXPECT_EQ("\n#\n^A", advance("\n#\nA"));
 }

@@ -35,6 +35,7 @@
 
 #ifndef _WIN32
 #include <unistd.h>
+#include <sys/mman.h>
 #include <sys/time.h>
 #endif
 
@@ -54,6 +55,7 @@
 
 #include "edit_distance.h"
 #include "metrics.h"
+#include "string_piece.h"
 
 void Fatal(const char* msg, ...) {
   va_list ap;
@@ -398,6 +400,59 @@ int ReadFile(const string& path, string* contents, string* err) {
 #endif
 }
 
+#ifndef _WIN32
+void Mapping::unmap() {
+  if (base_ != nullptr) {
+    if (munmap(base_, mapping_size_) < 0)
+      perror("munmap");
+    base_ = nullptr;
+    file_size_ = 0;
+    mapping_size_ = 0;
+  }
+}
+
+int MapFile(const std::string& filename,
+            std::unique_ptr<Mapping>* result,
+            std::string* err) {
+  const int fd = open(filename.c_str(), O_RDONLY);
+  if (fd == -1) {
+    *err = strerror(errno);
+    return -errno;
+  }
+
+  // The lexer needs a NUL byte at the end of its input, to know when it's done.
+  // Allocate an entire zero page to be sure.
+  const size_t page_size = sysconf(_SC_PAGESIZE);
+  const size_t file_size = lseek(fd, 0, SEEK_END);
+  const size_t mapping_size = RoundUp(file_size + page_size, page_size);
+  char* map_region = static_cast<char*>(mmap(nullptr, mapping_size,
+                                             PROT_READ,
+                                             MAP_PRIVATE, fd, 0));
+  if (map_region == reinterpret_cast<char*>(-1)) {
+    *err = strerror(errno);
+    return -errno;
+  }
+
+  std::unique_ptr<Mapping> mapping(
+      new Mapping(map_region, file_size, mapping_size));
+
+  // Replace the extra page at the end with a read-write anonymous page that
+  // we write an explicit NUL-terminator into.
+  if (mmap(map_region + mapping_size - page_size, page_size,
+           PROT_READ | PROT_WRITE,
+           MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) ==
+      reinterpret_cast<char*>(-1)) {
+    *err = std::string("mapping zero page failed: ") + strerror(errno);
+    return -errno;
+  }
+  map_region[mapping_size - page_size] = '\0';
+
+  close(fd);
+  *result = std::move(mapping);
+  return 0;
+}
+#endif  // ! _WIN32
+
 void SetCloseOnExec(int fd) {
 #ifndef _WIN32
   int flags = fcntl(fd, F_GETFD);
@@ -632,6 +687,17 @@ bool Truncate(const string& path, size_t size, string* err) {
   if (success < 0) {
     *err = strerror(errno);
     return false;
+  }
+  return true;
+}
+
+bool PropagateError(std::string* err,
+                    const std::vector<std::string>& subtask_err) {
+  for (const std::string& e : subtask_err) {
+    if (!e.empty()) {
+      *err = e;
+      return false;
+    }
   }
   return true;
 }

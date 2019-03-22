@@ -301,11 +301,11 @@ Node* NinjaMain::CollectTarget(const char* cpath, string* err) {
   Node* node = state_.LookupNode(path);
   if (node) {
     if (first_dependent) {
-      if (node->out_edges().empty()) {
+      if (!node->has_out_edge()) {
         *err = "'" + path + "' has no out edge";
         return NULL;
       }
-      Edge* edge = node->out_edges()[0];
+      Edge* edge = node->GetOutEdges()[0];
       if (edge->outputs_.empty()) {
         edge->Dump();
         Fatal("edge has no outputs");
@@ -390,8 +390,9 @@ int NinjaMain::ToolQuery(const Options* options, int argc, char* argv[]) {
       }
     }
     printf("  outputs:\n");
-    for (vector<Edge*>::const_iterator edge = node->out_edges().begin();
-         edge != node->out_edges().end(); ++edge) {
+    const std::vector<Edge*> out_edges = node->GetOutEdges();
+    for (vector<Edge*>::const_iterator edge = out_edges.begin();
+         edge != out_edges.end(); ++edge) {
       for (vector<Node*>::iterator out = (*edge)->outputs_.begin();
            out != (*edge)->outputs_.end(); ++out) {
         printf("    %s\n", (*out)->path().c_str());
@@ -989,7 +990,7 @@ void NinjaMain::DumpMetrics() {
 }
 
 bool NinjaMain::EnsureBuildDirExists() {
-  build_dir_ = state_.bindings_.LookupVariable("builddir");
+  build_dir_ = state_.root_scope_.LookupVariable("builddir");
   if (!build_dir_.empty() && !config_.dry_run) {
     if (!disk_interface_.MakeDirs(build_dir_ + "/.") && errno != EEXIST) {
       Error("creating build directory %s: %s",

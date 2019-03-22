@@ -12,12 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef NINJA_MAP_H_
-#define NINJA_MAP_H_
+#ifndef NINJA_HASH_MAP_H_
+#define NINJA_HASH_MAP_H_
 
-#include <algorithm>
 #include <string.h>
-#include "string_piece.h"
 
 #ifndef FALLTHROUGH_INTENDED
 #if defined(__has_cpp_attribute) && __has_cpp_attribute(clang::fallthrough)
@@ -58,71 +56,4 @@ unsigned int MurmurHash2(const void* key, size_t len) {
   return h;
 }
 
-#if (__cplusplus >= 201103L) || (_MSC_VER >= 1900)
-#include <unordered_map>
-
-namespace std {
-template<>
-struct hash<StringPiece> {
-  typedef StringPiece argument_type;
-  typedef size_t result_type;
-
-  size_t operator()(StringPiece key) const {
-    return MurmurHash2(key.str_, key.len_);
-  }
-};
-}
-
-#elif defined(_MSC_VER)
-#include <hash_map>
-
-using stdext::hash_map;
-using stdext::hash_compare;
-
-struct StringPieceCmp : public hash_compare<StringPiece> {
-  size_t operator()(const StringPiece& key) const {
-    return MurmurHash2(key.str_, key.len_);
-  }
-  bool operator()(const StringPiece& a, const StringPiece& b) const {
-    int cmp = memcmp(a.str_, b.str_, min(a.len_, b.len_));
-    if (cmp < 0) {
-      return true;
-    } else if (cmp > 0) {
-      return false;
-    } else {
-      return a.len_ < b.len_;
-    }
-  }
-};
-
-#else
-#include <ext/hash_map>
-
-using __gnu_cxx::hash_map;
-
-namespace __gnu_cxx {
-template<>
-struct hash<StringPiece> {
-  size_t operator()(StringPiece key) const {
-    return MurmurHash2(key.str_, key.len_);
-  }
-};
-}
-#endif
-
-/// A template for hash_maps keyed by a StringPiece whose string is
-/// owned externally (typically by the values).  Use like:
-/// ExternalStringHash<Foo*>::Type foos; to make foos into a hash
-/// mapping StringPiece => Foo*.
-template<typename V>
-struct ExternalStringHashMap {
-#if (__cplusplus >= 201103L) || (_MSC_VER >= 1900)
-  typedef std::unordered_map<StringPiece, V> Type;
-#elif defined(_MSC_VER)
-  typedef hash_map<StringPiece, V, StringPieceCmp> Type;
-#else
-  typedef hash_map<StringPiece, V> Type;
-#endif
-};
-
-#endif // NINJA_MAP_H_
+#endif // NINJA_HASH_MAP_H_

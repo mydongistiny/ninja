@@ -24,8 +24,8 @@ cc_defaults {
         "-fvisibility=hidden",
         "-DNINJA_PYTHON=\"python\"",
         "-DNINJA_HAVE_BROWSE",
+        "-UNDEBUG",
     ],
-    cpp_std: "c++14",
     target: {
         linux_glibc: {
             cflags: ["-DUSE_PPOLL"],
@@ -62,6 +62,7 @@ cc_library_host_static {
         "src/graphviz.cc",
         "src/lexer.cc",
         "src/line_printer.cc",
+        "src/manifest_chunk_parser.cc",
         "src/manifest_parser.cc",
         "src/metrics.cc",
         "src/proto.cc",
@@ -80,6 +81,14 @@ cc_binary_host {
     defaults: ["ninja_defaults"],
     srcs: ["src/ninja.cc"],
     static_libs: ["libninja"],
+
+    // Use jemalloc for better multithreaded allocation performance. e.g. Using
+    // jemalloc can improve the overall runtime by 10x vs the default allocator.
+    target: {
+        linux_glibc: {
+            shared_libs: ["libjemalloc"],
+        },
+    },
 }
 
 cc_test_host {

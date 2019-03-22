@@ -218,6 +218,12 @@ struct StatTest : public StateTestWithBuiltinRules,
     assert(false);
     return NotFound;
   }
+  virtual Status LoadFile(const std::string& path,
+                          std::unique_ptr<LoadedFile>* result,
+                          std::string* err) {
+    assert(false);
+    return NotFound;
+  }
   virtual int RemoveFile(const string& path) {
     assert(false);
     return 0;

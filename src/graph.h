@@ -15,6 +15,7 @@
 #ifndef NINJA_GRAPH_H_
 #define NINJA_GRAPH_H_
 
+#include <atomic>
 #include <set>
 #include <string>
 #include <vector>
@@ -32,16 +33,71 @@ struct Node;
 struct Pool;
 struct State;
 
+/// A reference to a path from the lexer. This path is unevaluated, stored in
+/// mmap'ed memory, and is guaranteed to be followed by a terminating character
+/// (e.g. whitespace, a colon or pipe, etc).
+struct LexedPath {
+  StringPiece str_;
+};
+
+#ifdef _WIN32
+
+/// On Windows, we record the '/'-vs-'\' slash direction in the first reference
+/// to a path, which determines the path strings used in command-lines.
+struct NodeSlashBits {
+  NodeSlashBits() {}
+  NodeSlashBits(uint64_t value) : slash_bits_(value) {}
+  uint64_t slash_bits() const { return slash_bits_; }
+private:
+  uint64_t slash_bits_ = 0;
+};
+
+#else
+
+/// By default, '\' is not recognized as a path separator, and slash_bits is
+/// always 0.
+struct NodeSlashBits {
+  NodeSlashBits() {}
+  NodeSlashBits(uint64_t /*value*/) {}
+  uint64_t slash_bits() const { return 0; }
+};
+
+#endif  // _WIN32
+
+/// Record the earliest reference to the node, which is needed for two uses:
+///
+///  - To verify that a node exists before a "default" declaration references
+///    it.
+///  - On Windows, the earliest reference to the node determines the slash_bits
+///    value for decanonicalizing the node's path.
+///
+/// On Windows, atomic operations on this struct probably use a spin lock, but
+/// it can be configured to use a DWCAS (e.g. -mcx16 with Clang/libc++). On
+/// other targets, the empty base class occupies 0 bytes, and atomic operations
+/// will be lock-free.
+struct NodeFirstReference : NodeSlashBits {
+  NodeFirstReference() {}
+  NodeFirstReference(DeclIndex loc, uint64_t slash_bits)
+      : NodeSlashBits(slash_bits), loc_(loc) {}
+  DeclIndex dfs_location() const { return loc_; }
+private:
+  DeclIndex loc_ = kLastDeclIndex;
+};
+
+inline bool operator<(const NodeFirstReference& x,
+                      const NodeFirstReference& y) {
+  if (x.dfs_location() < y.dfs_location()) return true;
+  if (x.dfs_location() > y.dfs_location()) return false;
+  return x.slash_bits() < y.slash_bits();
+}
+
 /// Information about a node in the dependency graph: the file, whether
 /// it's dirty, mtime, etc.
 struct Node {
-  Node(const string& path, uint64_t slash_bits)
+  Node(const HashedStrView& path, uint64_t initial_slash_bits)
       : path_(path),
-        slash_bits_(slash_bits),
-        mtime_(-1),
-        dirty_(false),
-        in_edge_(NULL),
-        id_(-1) {}
+        first_reference_({ kLastDeclIndex, initial_slash_bits }) {}
+  ~Node();
 
   /// Return false on error.
   bool Stat(DiskInterface* disk_interface, string* err);
@@ -72,14 +128,14 @@ struct Node {
     return mtime_ != -1;
   }
 
-  const string& path() const { return path_; }
+  const std::string& path() const { return path_.str(); }
+  const HashedStr& path_hashed() const { return path_; }
   /// Get |path()| but use slash_bits to convert back to original slash styles.
   string PathDecanonicalized() const {
-    return PathDecanonicalized(path_, slash_bits_);
+    return PathDecanonicalized(path_.str(), slash_bits());
   }
   static string PathDecanonicalized(const string& path,
                                     uint64_t slash_bits);
-  uint64_t slash_bits() const { return slash_bits_; }
 
   TimeStamp mtime() const { return mtime_; }
 
@@ -93,38 +149,104 @@ struct Node {
   int id() const { return id_; }
   void set_id(int id) { id_ = id; }
 
-  const vector<Edge*>& out_edges() const { return out_edges_; }
-  void AddOutEdge(Edge* edge) { out_edges_.push_back(edge); }
+  // Thread-safe properties.
+  DeclIndex dfs_location() const {
+    return first_reference_.load().dfs_location();
+  }
+  uint64_t slash_bits() const {
+    return first_reference_.load().slash_bits();
+  }
+  void UpdateFirstReference(DeclIndex dfs_location, uint64_t slash_bits) {
+    AtomicUpdateMinimum(&first_reference_, { dfs_location, slash_bits });
+  }
+
+  // Thread-safe properties.
+  bool has_out_edge() const;
+  std::vector<Edge*> GetOutEdges() const;
+  void AddOutEdge(Edge* edge);
+
+  /// Add an out-edge from the dependency scan. This function differs from
+  /// AddOutEdge in several ways:
+  ///  - It uses a simple vector, which is faster for single-threaded use.
+  ///  - It's not thread-safe.
+  ///  - It preserves edge order. Edges added with AddOutEdge come from the
+  ///    manifest and are ordered by their position within the manifest
+  ///    (represented with the edge ID). Dep scan edges, on the other hand,
+  ///    are ordered by a DFS walk from target nodes to their dependencies.
+  ///    (I'm not sure whether this order is practically important.)
+  void AddOutEdgeDepScan(Edge* edge) { dep_scan_out_edges_.push_back(edge); }
 
   void Dump(const char* prefix="") const;
 
 private:
-  string path_;
-
-  /// Set bits starting from lowest for backslashes that were normalized to
-  /// forward slashes by CanonicalizePath. See |PathDecanonicalized|.
-  uint64_t slash_bits_;
+  const HashedStr path_;
 
   /// Possible values of mtime_:
   ///   -1: file hasn't been examined
   ///   0:  we looked, and file doesn't exist
   ///   >0: actual file's mtime
-  TimeStamp mtime_;
+  TimeStamp mtime_ = -1;
 
   /// Dirty is true when the underlying file is out-of-date.
   /// But note that Edge::outputs_ready_ is also used in judging which
   /// edges to build.
-  bool dirty_;
-
-  /// The Edge that produces this Node, or NULL when there is no
-  /// known edge to produce it.
-  Edge* in_edge_;
-
-  /// All Edges that use this Node as an input.
-  vector<Edge*> out_edges_;
+  bool dirty_ = false;
 
   /// A dense integer id for the node, assigned and used by DepsLog.
-  int id_;
+  int id_ = -1;
+
+  std::atomic<NodeFirstReference> first_reference_;
+
+  Edge* in_edge_ = nullptr;
+
+  struct EdgeList {
+    EdgeList(Edge* edge=nullptr, EdgeList* next=nullptr)
+        : edge(edge), next(next) {}
+
+    Edge* edge = nullptr;
+    EdgeList* next = nullptr;
+  };
+
+  /// All Edges that use this Node as an input. The order of this list is
+  /// non-deterministic. An accessor function sorts it each time it's used.
+  std::atomic<EdgeList*> out_edges_ { nullptr };
+
+  std::vector<Edge*> dep_scan_out_edges_;
+};
+
+struct EdgeEval {
+  enum EvalPhase { kParseTime, kFinalScope };
+  enum EscapeKind { kShellEscape, kDoNotEscape };
+
+  EdgeEval(Edge* edge, EvalPhase eval_phase, EscapeKind escape)
+      : edge_(edge),
+        eval_phase_(eval_phase),
+        escape_in_out_(escape) {}
+
+  /// Looks up the variable and appends its value to the output buffer. Returns
+  /// false on error (i.e. a cycle in rule variable expansion).
+  bool EvaluateVariable(std::string* out_append, const HashedStrView& var,
+                        std::string* err);
+
+  /// There are only a small number of bindings allowed on a rule. If we recurse
+  /// enough times, we're guaranteed to repeat a variable.
+  static constexpr int kEvalRecursionLimit = 16;
+
+private:
+  Edge* edge_ = nullptr;
+
+  EvalPhase eval_phase_ = kFinalScope;
+
+  /// The kind of escaping to do on $in and $out path variables.
+  EscapeKind escape_in_out_ = kShellEscape;
+
+  int recursion_count_ = 0;
+  StringPiece recursion_vars_[kEvalRecursionLimit];
+
+  void AppendPathList(std::string* out_append,
+                      std::vector<Node*>::iterator begin,
+                      std::vector<Node*>::iterator end,
+                      char sep);
 };
 
 /// An edge in the dependency graph; links between Nodes using Rules.
@@ -135,10 +257,6 @@ struct Edge {
     VisitDone
   };
 
-  Edge() : rule_(NULL), pool_(NULL), env_(NULL), mark_(VisitNone), id_(0),
-           outputs_ready_(false), deps_missing_(false),
-           implicit_deps_(0), order_only_deps_(0), implicit_outs_(0) {}
-
   /// Return true if all inputs' in-edges are ready.
   bool AllInputsReady() const;
 
@@ -147,8 +265,24 @@ struct Edge {
   /// full contents of a response file (if applicable)
   string EvaluateCommand(bool incl_rsp_file = false);
 
-  /// Returns the shell-escaped value of |key|.
-  string GetBinding(const string& key);
+  /// Appends the value of |key| to the output buffer. On error, returns false,
+  /// and the content of the output buffer is unspecified.
+  bool EvaluateVariable(std::string* out_append, const HashedStrView& key,
+                        std::string* err,
+                        EdgeEval::EvalPhase phase=EdgeEval::kFinalScope,
+                        EdgeEval::EscapeKind escape=EdgeEval::kShellEscape);
+
+private:
+  std::string GetBindingImpl(const HashedStrView& key,
+                             EdgeEval::EvalPhase phase,
+                             EdgeEval::EscapeKind escape);
+
+public:
+  /// Convenience method for EvaluateVariable. On failure, it issues a fatal
+  /// error. This function must not be called from a worker thread because:
+  ///  - Error reporting should be deterministic, and
+  ///  - Fatal() destructs static globals, which a worker thread could be using.
+  std::string GetBinding(const HashedStrView& key);
   bool GetBindingBool(const string& key);
 
   /// Like GetBinding("depfile"), but without shell escaping.
@@ -158,16 +292,35 @@ struct Edge {
 
   void Dump(const char* prefix="") const;
 
-  const Rule* rule_;
-  Pool* pool_;
+  /// Temporary fields used only during manifest parsing.
+  struct DeferredPathList {
+    DeferredPathList(const char* lexer_pos=nullptr, bool is_output=false,
+                     int count=0)
+        : lexer_pos(lexer_pos), is_output(is_output), count(count) {}
+
+    const char* lexer_pos = nullptr;
+    bool is_output = false;
+    int count = 0;
+  };
+  struct {
+    StringPiece rule_name;
+    size_t rule_name_diag_pos = 0;
+    size_t final_diag_pos = 0;
+    std::vector<DeferredPathList> deferred_path_lists;
+  } parse_state_;
+
+  RelativePosition pos_;
+  const Rule* rule_ = nullptr;
+  Pool* pool_ = nullptr;
   vector<Node*> inputs_;
   vector<Node*> outputs_;
-  BindingEnv* env_;
-  VisitMark mark_;
-  size_t id_;
-  bool outputs_ready_;
-  bool deps_missing_;
+  std::vector<std::pair<HashedStr, std::string>> unevaled_bindings_;
+  VisitMark mark_ = VisitNone;
+  size_t id_ = 0;
+  bool outputs_ready_ = false;
+  bool deps_missing_ = false;
 
+  DeclIndex dfs_location() const { return pos_.dfs_location(); }
   const Rule& rule() const { return *rule_; }
   Pool* pool() const { return pool_; }
   int weight() const { return 1; }
@@ -181,8 +334,9 @@ struct Edge {
   //                     don't cause the target to rebuild.
   // These are stored in inputs_ in that order, and we keep counts of
   // #2 and #3 when we need to access the various subsets.
-  int implicit_deps_;
-  int order_only_deps_;
+  int explicit_deps_ = 0;
+  int implicit_deps_ = 0;
+  int order_only_deps_ = 0;
   bool is_implicit(size_t index) {
     return index >= inputs_.size() - order_only_deps_ - implicit_deps_ &&
         !is_order_only(index);
@@ -196,7 +350,8 @@ struct Edge {
   // 2) implicit outs, which the target generates but are not part of $out.
   // These are stored in outputs_ in that order, and we keep a count of
   // #2 to use when we need to access the various subsets.
-  int implicit_outs_;
+  int explicit_outs_ = 0;
+  int implicit_outs_ = 0;
   bool is_implicit_out(size_t index) const {
     return index >= outputs_.size() - implicit_outs_;
   }
@@ -204,6 +359,12 @@ struct Edge {
   bool is_phony() const;
   bool use_console() const;
   bool maybe_phonycycle_diagnostic() const;
+
+  /// Search for a binding on this edge and append its value to the output
+  /// string. Does not search the enclosing scope. Use other functions to
+  /// include ancestor scopes and rule bindings.
+  bool EvaluateVariableSelfOnly(std::string* out_append,
+                                const HashedStrView& var) const;
 };
 
 struct EdgeCmp {

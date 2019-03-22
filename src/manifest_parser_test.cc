@@ -48,11 +48,10 @@ TEST_F(ParserTest, Rules) {
 "\n"
 "build result: cat in_1.cc in-2.O\n"));
 
-  ASSERT_EQ(3u, state.bindings_.GetRules().size());
-  const Rule* rule = state.bindings_.GetRules().begin()->second;
+  ASSERT_EQ(3u, state.root_scope_.GetRules().size());
+  const Rule* rule = state.root_scope_.GetRules().begin()->second;
   EXPECT_EQ("cat", rule->name());
-  EXPECT_EQ("[cat ][$in][ > ][$out]",
-            rule->GetBinding("command")->Serialize());
+  EXPECT_EQ("cat $in > $out\n", *rule->GetBinding("command"));
 }
 
 TEST_F(ParserTest, RuleAttributes) {
@@ -81,8 +80,8 @@ TEST_F(ParserTest, IgnoreIndentedComments) {
 "build result: cat in_1.cc in-2.O\n"
 "  #comment\n"));
 
-  ASSERT_EQ(2u, state.bindings_.GetRules().size());
-  const Rule* rule = state.bindings_.GetRules().begin()->second;
+  ASSERT_EQ(2u, state.root_scope_.GetRules().size());
+  const Rule* rule = state.root_scope_.GetRules().begin()->second;
   EXPECT_EQ("cat", rule->name());
   Edge* edge = state.GetNode("result", 0)->in_edge();
   EXPECT_TRUE(edge->GetBindingBool("restat"));
@@ -101,7 +100,7 @@ TEST_F(ParserTest, IgnoreIndentedBlankLines) {
 "variable=1\n"));
 
   // the variable must be in the top level environment
-  EXPECT_EQ("1", state.bindings_.LookupVariable("variable"));
+  EXPECT_EQ("1", state.root_scope_.LookupVariable("variable"));
 }
 
 TEST_F(ParserTest, ResponseFiles) {
@@ -114,13 +113,12 @@ TEST_F(ParserTest, ResponseFiles) {
 "build out: cat_rsp in\n"
 "  rspfile=out.rsp\n"));
 
-  ASSERT_EQ(2u, state.bindings_.GetRules().size());
-  const Rule* rule = state.bindings_.GetRules().begin()->second;
+  ASSERT_EQ(2u, state.root_scope_.GetRules().size());
+  const Rule* rule = state.root_scope_.GetRules().begin()->second;
   EXPECT_EQ("cat_rsp", rule->name());
-  EXPECT_EQ("[cat ][$rspfile][ > ][$out]",
-            rule->GetBinding("command")->Serialize());
-  EXPECT_EQ("[$rspfile]", rule->GetBinding("rspfile")->Serialize());
-  EXPECT_EQ("[$in]", rule->GetBinding("rspfile_content")->Serialize());
+  EXPECT_EQ("cat $rspfile > $out\n", *rule->GetBinding("command"));
+  EXPECT_EQ("$rspfile\n", *rule->GetBinding("rspfile"));
+  EXPECT_EQ("$in\n", *rule->GetBinding("rspfile_content"));
 }
 
 TEST_F(ParserTest, InNewline) {
@@ -131,11 +129,10 @@ TEST_F(ParserTest, InNewline) {
 "build out: cat_rsp in in2\n"
 "  rspfile=out.rsp\n"));
 
-  ASSERT_EQ(2u, state.bindings_.GetRules().size());
-  const Rule* rule = state.bindings_.GetRules().begin()->second;
+  ASSERT_EQ(2u, state.root_scope_.GetRules().size());
+  const Rule* rule = state.root_scope_.GetRules().begin()->second;
   EXPECT_EQ("cat_rsp", rule->name());
-  EXPECT_EQ("[cat ][$in_newline][ > ][$out]",
-            rule->GetBinding("command")->Serialize());
+  EXPECT_EQ("cat $in_newline > $out\n", *rule->GetBinding("command"));
 
   Edge* edge = state.edges_[0];
   EXPECT_EQ("cat in\nin2 > out", edge->EvaluateCommand());
@@ -159,7 +156,7 @@ TEST_F(ParserTest, Variables) {
   Edge* edge = state.edges_[0];
   EXPECT_EQ("ld one-letter-test -pthread -under -o a b c",
             edge->EvaluateCommand());
-  EXPECT_EQ("1/2", state.bindings_.LookupVariable("nested2"));
+  EXPECT_EQ("1/2", state.root_scope_.LookupVariable("nested2"));
 
   edge = state.edges_[1];
   EXPECT_EQ("ld one-letter-test 1/2/3 -under -o supernested x",
@@ -192,10 +189,12 @@ TEST_F(ParserTest, Continuation) {
 "build a: link c $\n"
 " d e f\n"));
 
-  ASSERT_EQ(2u, state.bindings_.GetRules().size());
-  const Rule* rule = state.bindings_.GetRules().begin()->second;
+  ASSERT_EQ(2u, state.root_scope_.GetRules().size());
+  const Rule* rule = state.root_scope_.GetRules().begin()->second;
   EXPECT_EQ("link", rule->name());
-  EXPECT_EQ("[foo bar baz]", rule->GetBinding("command")->Serialize());
+  std::string command = *rule->GetBinding("command");
+  EXPECT_EQ("foo bar $\n    baz\n", command);
+  EXPECT_EQ("foo bar baz", EvaluateBindingForTesting(command));
 }
 
 TEST_F(ParserTest, Backslash) {
@@ -203,15 +202,15 @@ TEST_F(ParserTest, Backslash) {
 "foo = bar\\baz\n"
 "foo2 = bar\\ baz\n"
 ));
-  EXPECT_EQ("bar\\baz", state.bindings_.LookupVariable("foo"));
-  EXPECT_EQ("bar\\ baz", state.bindings_.LookupVariable("foo2"));
+  EXPECT_EQ("bar\\baz", state.root_scope_.LookupVariable("foo"));
+  EXPECT_EQ("bar\\ baz", state.root_scope_.LookupVariable("foo2"));
 }
 
 TEST_F(ParserTest, Comment) {
   ASSERT_NO_FATAL_FAILURE(AssertParse(
 "# this is a comment\n"
 "foo = not # a comment\n"));
-  EXPECT_EQ("not # a comment", state.bindings_.LookupVariable("foo"));
+  EXPECT_EQ("not # a comment", state.root_scope_.LookupVariable("foo"));
 }
 
 TEST_F(ParserTest, Dollars) {
@@ -222,7 +221,7 @@ TEST_F(ParserTest, Dollars) {
 "x = $$dollar\n"
 "build $x: foo y\n"
 ));
-  EXPECT_EQ("$dollar", state.bindings_.LookupVariable("x"));
+  EXPECT_EQ("$dollar", state.root_scope_.LookupVariable("x"));
 #ifdef _WIN32
   EXPECT_EQ("$dollarbar$baz$blah", state.edges_[0]->EvaluateCommand());
 #else
@@ -416,6 +415,38 @@ TEST_F(ParserTest, ReservedWords) {
 "  command = rule run $out\n"
 "build subninja: build include default foo.cc\n"
 "default subninja\n"));
+}
+
+TEST_F(ParserTest, NulCharErrors) {
+  {
+    State local_state;
+    ManifestParser parser(&local_state, NULL);
+    std::string err;
+    EXPECT_FALSE(parser.ParseTest("\0"_s, &err));
+    EXPECT_EQ("input:1: unexpected NUL byte\n", err);
+  }
+
+  {
+    State local_state;
+    ManifestParser parser(&local_state, NULL);
+    std::string err;
+    EXPECT_FALSE(parser.ParseTest("build foo\0"_s, &err));
+    EXPECT_EQ("input:1: unexpected NUL byte\n"
+              "build foo\n"
+              "         ^ near here"
+              , err);
+  }
+
+  {
+    State local_state;
+    ManifestParser parser(&local_state, NULL);
+    std::string err;
+    EXPECT_FALSE(parser.ParseTest("foo\0"_s, &err));
+    EXPECT_EQ("input:1: expected '=', got nul byte\n"
+              "foo\n"
+              "   ^ near here"
+              , err);
+  }
 }
 
 TEST_F(ParserTest, Errors) {
@@ -701,10 +732,15 @@ TEST_F(ParserTest, Errors) {
   }
 
   {
+    // The default statement's target must be listed earlier in a build
+    // statement.
     State local_state;
     ManifestParser parser(&local_state, NULL);
     string err;
-    EXPECT_FALSE(parser.ParseTest("default nonexistent\n",
+    EXPECT_FALSE(parser.ParseTest("default nonexistent\n"
+                                  "rule cat\n"
+                                  "  command = cat $in > $out\n"
+                                  "build nonexistent: cat existent\n",
                                   &err));
     EXPECT_EQ("input:1: unknown target 'nonexistent'\n"
               "default nonexistent\n"
@@ -784,7 +820,8 @@ TEST_F(ParserTest, Errors) {
     string err;
     EXPECT_FALSE(parser.ParseTest("pool foo\n"
                                   "  depth = 4\n"
-                                  "pool foo\n", &err));
+                                  "pool foo\n"
+                                  "  depth = 2\n", &err));
     EXPECT_EQ("input:3: duplicate pool 'foo'\n"
               "pool foo\n"
               "        ^ near here"
@@ -934,7 +971,7 @@ TEST_F(ParserTest, Include) {
 
   ASSERT_EQ(1u, fs_.files_read_.size());
   EXPECT_EQ("include.ninja", fs_.files_read_[0]);
-  EXPECT_EQ("inner", state.bindings_.LookupVariable("var"));
+  EXPECT_EQ("inner", state.root_scope_.LookupVariable("var"));
 }
 
 TEST_F(ParserTest, BrokenInclude) {
@@ -1086,4 +1123,68 @@ TEST_F(ParserTest, CRLF) {
       "  command = something$expand \r\n"
       "  description = YAY!\r\n",
       &err));
+}
+
+TEST_F(ParserTest, IncludeUsingAVariable) {
+  // Each include statement should use the $path binding from the previous
+  // manifest declarations.
+  fs_.Create("foo.ninja", "path = bar.ninja\n"
+                          "include $path\n");
+  fs_.Create("bar.ninja", "");
+  ASSERT_NO_FATAL_FAILURE(AssertParse(
+"path = foo.ninja\n"
+"include $path\n"
+"include $path\n"
+"path = nonexistent.ninja\n"));
+}
+
+TEST_F(ParserTest, UnscopedPool) {
+  // Pools aren't scoped.
+  fs_.Create("foo.ninja", "pool link\n"
+                          "  depth = 3\n");
+  ASSERT_NO_FATAL_FAILURE(AssertParse(
+"rule cat\n"
+"  command = cat $in > $out\n"
+"  pool = link\n"
+"subninja foo.ninja\n"
+"build a: cat b\n"));
+}
+
+TEST_F(ParserTest, PoolDeclaredAfterUse) {
+  // A pool must be declared before an edge that uses it.
+  ManifestParser parser(&state, nullptr);
+  std::string err;
+  EXPECT_FALSE(parser.ParseTest("rule cat\n"
+                                "  command = cat $in > $out\n"
+                                "  pool = link\n"
+                                "build a: cat b\n"
+                                "pool link\n"
+                                "  depth = 3\n", &err));
+  EXPECT_EQ("input:5: unknown pool name 'link'\n", err);
+}
+
+TEST_F(ParserTest, DefaultReferencesEdgeInput) {
+  // The default statement's target must be listed before the default statement.
+  // It's OK if the target's first reference is an input, though.
+  ASSERT_NO_FATAL_FAILURE(AssertParse(
+"rule cat\n  command = cat $in > $out\n"
+"build a1: cat b1\n"
+"build a2: cat b2\n"
+"default b1 b2\n"
+"build b1: cat c1\n"));
+}
+
+TEST_F(ParserTest, SelfVarExpansion) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(
+"var = xxx\n"
+"var1 = ${var}\n"
+"var = a${var}a\n"
+"var2 = ${var}\n"
+"var = b${var}b\n"
+"var3 = ${var}\n"
+"var = c${var}c\n"));
+  EXPECT_EQ("xxx", state.root_scope_.LookupVariable("var1"));
+  EXPECT_EQ("axxxa", state.root_scope_.LookupVariable("var2"));
+  EXPECT_EQ("baxxxab", state.root_scope_.LookupVariable("var3"));
+  EXPECT_EQ("cbaxxxabc", state.root_scope_.LookupVariable("var"));
 }

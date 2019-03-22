@@ -241,6 +241,35 @@ FileReader::Status RealDiskInterface::ReadFile(const string& path,
   }
 }
 
+FileReader::Status RealDiskInterface::LoadFile(const std::string& path,
+                                               std::unique_ptr<LoadedFile>* result,
+                                               std::string* err) {
+#ifdef _WIN32
+#error "LoadFile is not implemented yet on Windows"
+#else
+  struct MappedFile : LoadedFile {
+    MappedFile(const std::string& filename, std::unique_ptr<Mapping> mapping)
+        : mapping_(std::move(mapping)) {
+      filename_ = filename;
+      content_with_nul_ = { mapping_->base(), mapping_->file_size() + 1 };
+    }
+    std::unique_ptr<Mapping> mapping_;
+  };
+
+  std::unique_ptr<Mapping> mapping;
+  switch (::MapFile(path, &mapping, err)) {
+  case 0:
+    *result = std::unique_ptr<MappedFile>(new MappedFile(path,
+                                                         std::move(mapping)));
+    return Okay;
+  case -ENOENT:
+    return NotFound;
+  default:
+    return OtherError;
+  }
+#endif
+}
+
 int RealDiskInterface::RemoveFile(const string& path) {
   if (remove(path.c_str()) < 0) {
     switch (errno) {

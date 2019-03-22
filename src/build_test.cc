@@ -920,7 +920,7 @@ TEST_F(BuildTest, EncounterReadyTwice) {
 "build b: touch || c\n"
 "build a: touch | b || c\n"));
 
-  vector<Edge*> c_out = GetNode("c")->out_edges();
+  vector<Edge*> c_out = GetNode("c")->GetOutEdges();
   ASSERT_EQ(2u, c_out.size());
   EXPECT_EQ("b", c_out[0]->outputs_[0]->path());
   EXPECT_EQ("a", c_out[1]->outputs_[0]->path());

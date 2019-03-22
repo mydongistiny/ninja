@@ -16,6 +16,7 @@
 #define NINJA_STATE_H_
 
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -23,7 +24,8 @@ using namespace std;
 
 #include "eval_env.h"
 #include "graph.h"
-#include "hash_map.h"
+#include "string_piece.h"
+#include "concurrent_hash_map.h"
 #include "util.h"
 
 struct Edge;
@@ -39,13 +41,17 @@ struct Rule;
 /// the total scheduled weight diminishes enough (i.e. when a scheduled edge
 /// completes).
 struct Pool {
-  Pool(const string& name, int depth)
-    : name_(name), current_use_(0), depth_(depth), delayed_() {}
+  Pool() {}
+
+  /// Constructor for built-in pools.
+  Pool(const HashedStrView& name, int depth);
 
   // A depth of 0 is infinite
   bool is_valid() const { return depth_ >= 0; }
   int depth() const { return depth_; }
-  const string& name() const { return name_; }
+  DeclIndex dfs_location() const { return pos_.dfs_location(); }
+  const std::string& name() const { return name_.str(); }
+  const HashedStr& name_hashed() const { return name_; }
   int current_use() const { return current_use_; }
 
   /// true if the Pool might delay this edge
@@ -68,13 +74,21 @@ struct Pool {
   /// Dump the Pool and its edges (useful for debugging).
   void Dump() const;
 
- private:
-  string name_;
+  HashedStr name_;
+  int depth_ = 0;
+  RelativePosition pos_;
 
+  // Temporary fields used only during manifest parsing.
+  struct {
+    size_t pool_name_diag_pos = 0;
+    StringPiece depth;
+    size_t depth_diag_pos = 0;
+  } parse_state_;
+
+private:
   /// |current_use_| is the total of the weights of the edges which are
   /// currently scheduled in the Plan (i.e. the edges in Plan::ready_).
-  int current_use_;
-  int depth_;
+  int current_use_ = 0;
 
   struct WeightedEdgeCmp {
     bool operator()(const Edge* a, const Edge* b) const {
@@ -91,24 +105,42 @@ struct Pool {
 
 /// Global state (file status) for a single run.
 struct State {
+  /// The built-in pools and rules use this dummy built-in scope to initialize
+  /// their RelativePosition fields. The scope won't have anything in it.
+  static Scope kBuiltinScope;
+
   static Pool kDefaultPool;
   static Pool kConsolePool;
-  static const Rule kPhonyRule;
+  static Rule kPhonyRule;
 
   State();
 
-  void AddPool(Pool* pool);
-  Pool* LookupPool(const string& pool_name);
-
+  void AddBuiltinRule(Rule* rule);
+  bool AddPool(Pool* pool);
   Edge* AddEdge(const Rule* rule);
+  Pool* LookupPool(const HashedStrView& pool_name);
 
-  Node* GetNode(StringPiece path, uint64_t slash_bits);
-  Node* LookupNode(StringPiece path) const;
-  Node* SpellcheckNode(const string& path);
+  /// Lookup a pool at a DFS position. Pools don't respect scopes. A pool's name
+  /// must be unique across the entire manifest, and it must be declared before
+  /// an edge references it.
+  Pool* LookupPoolAtPos(const HashedStrView& pool_name, DeclIndex dfs_location);
 
+  /// Creates the node if it doesn't exist. Never returns nullptr. Thread-safe.
+  /// The hash table should be resized ahead of time for decent performance.
+  Node* GetNode(const HashedStrView& path, uint64_t slash_bits);
+
+  /// Finds the existing node, returns nullptr if it doesn't exist yet.
+  /// Thread-safe.
+  Node* LookupNode(const HashedStrView& path) const;
+  Node* LookupNodeAtPos(const HashedStrView& path,
+                        DeclIndex dfs_location) const;
+
+  Node* SpellcheckNode(StringPiece path);
+
+  /// These methods aren't thread-safe.
   void AddIn(Edge* edge, StringPiece path, uint64_t slash_bits);
   bool AddOut(Edge* edge, StringPiece path, uint64_t slash_bits);
-  bool AddDefault(StringPiece path, string* error);
+  void AddDefault(Node* node) { defaults_.push_back(node); }
 
   /// Reset state.  Keeps all nodes and edges, but restores them to the
   /// state where we haven't yet examined the disk for dirty state.
@@ -122,18 +154,27 @@ struct State {
   vector<Node*> RootNodes(string* error) const;
   vector<Node*> DefaultNodes(string* error) const;
 
+  DeclIndex AllocDfsLocation(DeclIndex count);
+
   /// Mapping of path -> Node.
-  typedef ExternalStringHashMap<Node*>::Type Paths;
+  ///
+  /// This hash map uses a value type of Node* rather than Node, which allows the
+  /// map entry's key (a string view) to refer to the Node::name field.
+  typedef ConcurrentHashMap<HashedStrView, Node*> Paths;
   Paths paths_;
 
   /// All the pools used in the graph.
-  map<string, Pool*> pools_;
+  std::unordered_map<HashedStrView, Pool*> pools_;
 
   /// All the edges of the graph.
   vector<Edge*> edges_;
 
-  BindingEnv bindings_;
+  Scope root_scope_ { ScopePosition {} };
   vector<Node*> defaults_;
+
+private:
+  /// Position 0 is used for built-in decls (e.g. pools).
+  DeclIndex dfs_location_ = 1;
 };
 
 #endif  // NINJA_STATE_H_

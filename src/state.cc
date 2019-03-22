@@ -22,6 +22,9 @@
 #include "metrics.h"
 #include "util.h"
 
+Pool::Pool(const HashedStrView& name, int depth) : name_(name), depth_(depth) {
+  pos_.base = new BasePosition {{ &State::kBuiltinScope, 0 }}; // leaked
+}
 
 void Pool::EdgeScheduled(const Edge& edge) {
   if (depth_ != 0)
@@ -61,56 +64,77 @@ void Pool::Dump() const {
   }
 }
 
+Scope State::kBuiltinScope({});
 Pool State::kDefaultPool("", 0);
 Pool State::kConsolePool("console", 1);
-const Rule State::kPhonyRule("phony");
+Rule State::kPhonyRule("phony");
 
 State::State() {
-  bindings_.AddRule(&kPhonyRule);
+  // Reserve scope position (root, 0) for built-in rules.
+  root_scope_.AllocDecls(1);
+
+  AddBuiltinRule(&kPhonyRule);
   AddPool(&kDefaultPool);
   AddPool(&kConsolePool);
 }
 
-void State::AddPool(Pool* pool) {
-  assert(LookupPool(pool->name()) == NULL);
-  pools_[pool->name()] = pool;
+// Add a built-in rule at the top of the root scope.
+void State::AddBuiltinRule(Rule* rule) {
+  root_scope_.AddRule(rule);
 }
 
-Pool* State::LookupPool(const string& pool_name) {
-  map<string, Pool*>::iterator i = pools_.find(pool_name);
-  if (i == pools_.end())
-    return NULL;
-  return i->second;
+bool State::AddPool(Pool* pool) {
+  return pools_.insert({ pool->name_hashed(), pool }).second;
 }
 
 Edge* State::AddEdge(const Rule* rule) {
   Edge* edge = new Edge();
+  edge->pos_.base = new BasePosition {{ &root_scope_, 0 }}; // leaked
   edge->rule_ = rule;
   edge->pool_ = &State::kDefaultPool;
-  edge->env_ = &bindings_;
   edge->id_ = edges_.size();
   edges_.push_back(edge);
   return edge;
 }
 
-Node* State::GetNode(StringPiece path, uint64_t slash_bits) {
-  Node* node = LookupNode(path);
-  if (node)
-    return node;
-  node = new Node(path.AsString(), slash_bits);
-  paths_[node->path()] = node;
-  return node;
+Pool* State::LookupPool(const HashedStrView& pool_name) {
+  auto i = pools_.find(pool_name);
+  if (i == pools_.end())
+    return nullptr;
+  return i->second;
 }
 
-Node* State::LookupNode(StringPiece path) const {
-  METRIC_RECORD("lookup node");
-  Paths::const_iterator i = paths_.find(path);
-  if (i != paths_.end())
-    return i->second;
-  return NULL;
+Pool* State::LookupPoolAtPos(const HashedStrView& pool_name,
+                             DeclIndex dfs_location) {
+  Pool* result = LookupPool(pool_name);
+  if (result == nullptr) return nullptr;
+  return result->dfs_location() < dfs_location ? result : nullptr;
 }
 
-Node* State::SpellcheckNode(const string& path) {
+Node* State::GetNode(const HashedStrView& path, uint64_t slash_bits) {
+  if (Node** opt_node = paths_.Lookup(path))
+    return *opt_node;
+  // Create a new node and try to insert it.
+  std::unique_ptr<Node> node(new Node(path, slash_bits));
+  if (paths_.insert({node->path_hashed(), node.get()}).second)
+    return node.release();
+  // Another thread beat us to it. Use its node instead.
+  return *paths_.Lookup(path);
+}
+
+Node* State::LookupNode(const HashedStrView& path) const {
+  if (Node* const* opt_node = paths_.Lookup(path))
+    return *opt_node;
+  return nullptr;
+}
+
+Node* State::LookupNodeAtPos(const HashedStrView& path,
+                             DeclIndex dfs_location) const {
+  Node* result = LookupNode(path);
+  return result && result->dfs_location() < dfs_location ? result : nullptr;
+}
+
+Node* State::SpellcheckNode(StringPiece path) {
   const bool kAllowReplacements = true;
   const int kMaxValidEditDistance = 3;
 
@@ -118,7 +142,7 @@ Node* State::SpellcheckNode(const string& path) {
   Node* result = NULL;
   for (Paths::iterator i = paths_.begin(); i != paths_.end(); ++i) {
     int distance = EditDistance(
-        i->first, path, kAllowReplacements, kMaxValidEditDistance);
+        i->first.str_view(), path, kAllowReplacements, kMaxValidEditDistance);
     if (distance < min_distance && i->second) {
       min_distance = distance;
       result = i->second;
@@ -142,16 +166,6 @@ bool State::AddOut(Edge* edge, StringPiece path, uint64_t slash_bits) {
   return true;
 }
 
-bool State::AddDefault(StringPiece path, string* err) {
-  Node* node = LookupNode(path);
-  if (!node) {
-    *err = "unknown target '" + path.AsString() + "'";
-    return false;
-  }
-  defaults_.push_back(node);
-  return true;
-}
-
 vector<Node*> State::RootNodes(string* err) const {
   vector<Node*> root_nodes;
   // Search for nodes with no output.
@@ -159,7 +173,7 @@ vector<Node*> State::RootNodes(string* err) const {
        e != edges_.end(); ++e) {
     for (vector<Node*>::const_iterator out = (*e)->outputs_.begin();
          out != (*e)->outputs_.end(); ++out) {
-      if ((*out)->out_edges().empty())
+      if (!(*out)->has_out_edge())
         root_nodes.push_back(*out);
     }
   }
@@ -172,6 +186,12 @@ vector<Node*> State::RootNodes(string* err) const {
 
 vector<Node*> State::DefaultNodes(string* err) const {
   return defaults_.empty() ? RootNodes(err) : defaults_;
+}
+
+DeclIndex State::AllocDfsLocation(DeclIndex count) {
+  DeclIndex result = dfs_location_;
+  dfs_location_ += count;
+  return result;
 }
 
 void State::Reset() {
@@ -194,9 +214,7 @@ void State::Dump() {
   }
   if (!pools_.empty()) {
     printf("resource_pools:\n");
-    for (map<string, Pool*>::const_iterator it = pools_.begin();
-         it != pools_.end(); ++it)
-    {
+    for (auto it = pools_.begin(); it != pools_.end(); ++it) {
       if (!it->second->name().empty()) {
         it->second->Dump();
       }

@@ -22,13 +22,13 @@
 #include "depfile_parser.h"
 #include "deps_log.h"
 #include "disk_interface.h"
-#include "manifest_parser.h"
 #include "metrics.h"
+#include "parallel_map.h"
 #include "state.h"
 #include "util.h"
 
 bool Node::Stat(DiskInterface* disk_interface, string* err) {
-  return (mtime_ = disk_interface->Stat(path_, err)) != -1;
+  return (mtime_ = disk_interface->Stat(path_.str(), err)) != -1;
 }
 
 bool DependencyScan::RecomputeDirty(Node* node, string* err) {
@@ -282,82 +282,79 @@ bool Edge::AllInputsReady() const {
   return true;
 }
 
-/// An Env for an Edge, providing $in and $out.
-struct EdgeEnv : public Env {
-  enum EscapeKind { kShellEscape, kDoNotEscape };
+static const HashedStrView kIn        { "in" };
+static const HashedStrView kInNewline { "in_newline" };
+static const HashedStrView kOut       { "out" };
 
-  EdgeEnv(Edge* edge, EscapeKind escape)
-      : edge_(edge), escape_in_out_(escape), recursive_(false) {}
-  virtual string LookupVariable(const string& var);
-
-  /// Given a span of Nodes, construct a list of paths suitable for a command
-  /// line.
-  string MakePathList(vector<Node*>::iterator begin,
-                      vector<Node*>::iterator end,
-                      char sep);
-
- private:
-  vector<string> lookups_;
-  Edge* edge_;
-  EscapeKind escape_in_out_;
-  bool recursive_;
-};
-
-string EdgeEnv::LookupVariable(const string& var) {
-  if (var == "in" || var == "in_newline") {
+bool EdgeEval::EvaluateVariable(std::string* out_append,
+                                const HashedStrView& var,
+                                std::string* err) {
+  if (var == kIn || var == kInNewline) {
     int explicit_deps_count = edge_->inputs_.size() - edge_->implicit_deps_ -
       edge_->order_only_deps_;
-    return MakePathList(edge_->inputs_.begin(),
-                        edge_->inputs_.begin() + explicit_deps_count,
-                        var == "in" ? ' ' : '\n');
-  } else if (var == "out") {
+    AppendPathList(out_append,
+                   edge_->inputs_.begin(),
+                   edge_->inputs_.begin() + explicit_deps_count,
+                   var == kIn ? ' ' : '\n');
+    return true;
+  } else if (var == kOut) {
     int explicit_outs_count = edge_->outputs_.size() - edge_->implicit_outs_;
-    return MakePathList(edge_->outputs_.begin(),
-                        edge_->outputs_.begin() + explicit_outs_count,
-                        ' ');
+    AppendPathList(out_append,
+                   edge_->outputs_.begin(),
+                   edge_->outputs_.begin() + explicit_outs_count,
+                   ' ');
+    return true;
   }
 
-  if (recursive_) {
-    vector<string>::const_iterator it;
-    if ((it = find(lookups_.begin(), lookups_.end(), var)) != lookups_.end()) {
-      string cycle;
-      for (; it != lookups_.end(); ++it)
-        cycle.append(*it + " -> ");
-      cycle.append(var);
-      Fatal(("cycle in rule variables: " + cycle).c_str());
+  if (edge_->EvaluateVariableSelfOnly(out_append, var))
+    return true;
+
+  // Search for a matching rule binding.
+  if (const std::string* binding_pattern = edge_->rule().GetBinding(var)) {
+    // Detect recursive rule variable usage.
+    if (recursion_count_ == kEvalRecursionLimit) {
+      std::string cycle = recursion_vars_[0].AsString();
+      for (int i = 1; i < kEvalRecursionLimit; ++i) {
+        cycle += " -> " + recursion_vars_[i].AsString();
+        if (recursion_vars_[i] == recursion_vars_[0])
+          break;
+      }
+      *err = "cycle in rule variables: " + cycle;
+      return false;
     }
+    recursion_vars_[recursion_count_++] = var.str_view();
+
+    return EvaluateBindingOnRule(out_append, *binding_pattern, this, err);
   }
 
-  // See notes on BindingEnv::LookupWithFallback.
-  const EvalString* eval = edge_->rule_->GetBinding(var);
-  if (recursive_ && eval)
-    lookups_.push_back(var);
-
-  // In practice, variables defined on rules never use another rule variable.
-  // For performance, only start checking for cycles after the first lookup.
-  recursive_ = true;
-  return edge_->env_->LookupWithFallback(var, eval, this);
+  // Fall back to the edge's enclosing scope.
+  if (eval_phase_ == EdgeEval::kParseTime) {
+    Scope::EvaluateVariableAtPos(out_append, var, edge_->pos_.scope_pos());
+  } else {
+    Scope::EvaluateVariable(out_append, var, edge_->pos_.scope());
+  }
+  return true;
 }
 
-string EdgeEnv::MakePathList(vector<Node*>::iterator begin,
-                             vector<Node*>::iterator end,
-                             char sep) {
-  string result;
-  for (vector<Node*>::iterator i = begin; i != end; ++i) {
-    if (!result.empty())
-      result.push_back(sep);
-    const string& path = (*i)->PathDecanonicalized();
+void EdgeEval::AppendPathList(std::string* out_append,
+                              std::vector<Node*>::iterator begin,
+                              std::vector<Node*>::iterator end,
+                              char sep) {
+  for (auto it = begin; it != end; ++it) {
+    if (it != begin)
+      out_append->push_back(sep);
+
+    const string& path = (*it)->PathDecanonicalized();
     if (escape_in_out_ == kShellEscape) {
 #if _WIN32
-      GetWin32EscapedString(path, &result);
+      GetWin32EscapedString(path, out_append);
 #else
-      GetShellEscapedString(path, &result);
+      GetShellEscapedString(path, out_append);
 #endif
     } else {
-      result.append(path);
+      out_append->append(path);
     }
   }
-  return result;
 }
 
 string Edge::EvaluateCommand(bool incl_rsp_file) {
@@ -370,23 +367,37 @@ string Edge::EvaluateCommand(bool incl_rsp_file) {
   return command;
 }
 
-string Edge::GetBinding(const string& key) {
-  EdgeEnv env(this, EdgeEnv::kShellEscape);
-  return env.LookupVariable(key);
+bool Edge::EvaluateVariable(std::string* out_append, const HashedStrView& key,
+                            std::string* err, EdgeEval::EvalPhase phase,
+                            EdgeEval::EscapeKind escape) {
+  EdgeEval eval(this, phase, escape);
+  return eval.EvaluateVariable(out_append, key, err);
+}
+
+std::string Edge::GetBindingImpl(const HashedStrView& key,
+                                 EdgeEval::EvalPhase phase,
+                                 EdgeEval::EscapeKind escape) {
+  std::string result;
+  std::string err;
+  if (!EvaluateVariable(&result, key, &err, phase, escape))
+    Fatal("%s", err.c_str());
+  return result;
+}
+
+std::string Edge::GetBinding(const HashedStrView& key) {
+  return GetBindingImpl(key, EdgeEval::kFinalScope, EdgeEval::kShellEscape);
 }
 
 bool Edge::GetBindingBool(const string& key) {
   return !GetBinding(key).empty();
 }
 
-string Edge::GetUnescapedDepfile() {
-  EdgeEnv env(this, EdgeEnv::kDoNotEscape);
-  return env.LookupVariable("depfile");
+std::string Edge::GetUnescapedDepfile() {
+  return GetBindingImpl("depfile", EdgeEval::kFinalScope, EdgeEval::kDoNotEscape);
 }
 
-string Edge::GetUnescapedRspfile() {
-  EdgeEnv env(this, EdgeEnv::kDoNotEscape);
-  return env.LookupVariable("rspfile");
+std::string Edge::GetUnescapedRspfile() {
+  return GetBindingImpl("rspfile", EdgeEval::kFinalScope, EdgeEval::kDoNotEscape);
 }
 
 void Edge::Dump(const char* prefix) const {
@@ -423,7 +434,21 @@ bool Edge::maybe_phonycycle_diagnostic() const {
   // of the form "build a: phony ... a ...".   Restrict our
   // "phonycycle" diagnostic option to the form it used.
   return is_phony() && outputs_.size() == 1 && implicit_outs_ == 0 &&
-      implicit_deps_ == 0;
+      implicit_deps_ == 0 && order_only_deps_ == 0;
+}
+
+bool Edge::EvaluateVariableSelfOnly(std::string* out_append,
+                                    const HashedStrView& var) const {
+  // ninja allows declaring the same binding repeatedly on an edge. Use the
+  // last matching binding.
+  const auto it_end = unevaled_bindings_.rend();
+  for (auto it = unevaled_bindings_.rbegin(); it != it_end; ++it) {
+    if (var == it->first) {
+      EvaluateBindingInScope(out_append, it->second, pos_.scope_pos());
+      return true;
+    }
+  }
+  return false;
 }
 
 // static
@@ -441,6 +466,46 @@ string Node::PathDecanonicalized(const string& path, uint64_t slash_bits) {
   return result;
 }
 
+Node::~Node() {
+  EdgeList* node = out_edges_.load();
+  while (node != nullptr) {
+    EdgeList* next = node->next;
+    delete node;
+    node = next;
+  }
+}
+
+// Does the node have at least one out edge?
+bool Node::has_out_edge() const {
+  return out_edges_.load() != nullptr;
+}
+
+std::vector<Edge*> Node::GetOutEdges() const {
+  // Include out-edges from the manifest.
+  std::vector<Edge*> result;
+  for (EdgeList* node = out_edges_.load(); node != nullptr; node = node->next) {
+    result.push_back(node->edge);
+  }
+  std::sort(result.begin(), result.end(), EdgeCmp());
+
+  // Add extra out-edges from depfiles and the deps log. Preserve the order
+  // of these extra edges; don't sort them.
+  std::copy(dep_scan_out_edges_.begin(), dep_scan_out_edges_.end(),
+            std::back_inserter(result));
+
+  return result;
+}
+
+void Node::AddOutEdge(Edge* edge) {
+  EdgeList* new_node = new EdgeList { edge };
+  while (true) {
+    EdgeList* cur_head = out_edges_.load();
+    new_node->next = cur_head;
+    if (out_edges_.compare_exchange_weak(cur_head, new_node))
+      break;
+  }
+}
+
 void Node::Dump(const char* prefix) const {
   printf("%s <%s 0x%p> mtime: %d%s, (:%s), ",
          prefix, path().c_str(), this,
@@ -452,8 +517,9 @@ void Node::Dump(const char* prefix) const {
     printf("no in-edge\n");
   }
   printf(" out edges:\n");
-  for (vector<Edge*>::const_iterator e = out_edges().begin();
-       e != out_edges().end() && *e != NULL; ++e) {
+  const std::vector<Edge*> out_edges = GetOutEdges();
+  for (vector<Edge*>::const_iterator e = out_edges.begin();
+       e != out_edges.end() && *e != NULL; ++e) {
     (*e)->Dump(" +- ");
   }
 }
@@ -509,8 +575,7 @@ bool ImplicitDepLoader::LoadDepFile(Edge* edge, const string& path,
   // Check that this depfile matches the edge's output, if not return false to
   // mark the edge as dirty.
   Node* first_output = edge->outputs_[0];
-  StringPiece opath = StringPiece(first_output->path());
-  if (opath != depfile.out_) {
+  if (first_output->path() != depfile.out_) {
     EXPLAIN("expected depfile '%s' to mention '%s', got '%s'", path.c_str(),
             first_output->path().c_str(), depfile.out_.AsString().c_str());
     return false;
@@ -530,7 +595,7 @@ bool ImplicitDepLoader::LoadDepFile(Edge* edge, const string& path,
 
     Node* node = state_->GetNode(*i, slash_bits);
     *implicit_dep = node;
-    node->AddOutEdge(edge);
+    node->AddOutEdgeDepScan(edge);
     CreatePhonyInEdge(node);
   }
 
@@ -558,7 +623,7 @@ bool ImplicitDepLoader::LoadDepsFromLog(Edge* edge, string* err) {
   for (int i = 0; i < deps->node_count; ++i, ++implicit_dep) {
     Node* node = deps->nodes[i];
     *implicit_dep = node;
-    node->AddOutEdge(edge);
+    node->AddOutEdgeDepScan(edge);
     CreatePhonyInEdge(node);
   }
   return true;
@@ -579,6 +644,7 @@ void ImplicitDepLoader::CreatePhonyInEdge(Node* node) {
   Edge* phony_edge = state_->AddEdge(&State::kPhonyRule);
   node->set_in_edge(phony_edge);
   phony_edge->outputs_.push_back(node);
+  ++phony_edge->explicit_outs_;
 
   // RecomputeDirty might not be called for phony_edge if a previous call
   // to RecomputeDirty had caused the file to be stat'ed.  Because previous

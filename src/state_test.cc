@@ -21,15 +21,9 @@ namespace {
 TEST(State, Basic) {
   State state;
 
-  EvalString command;
-  command.AddText("cat ");
-  command.AddSpecial("in");
-  command.AddText(" > ");
-  command.AddSpecial("out");
-
   Rule* rule = new Rule("cat");
-  rule->AddBinding("command", command);
-  state.bindings_.AddRule(rule);
+  rule->bindings_.emplace_back("command", "cat $in > $out\n");
+  state.root_scope_.AddRule(rule);
 
   Edge* edge = state.AddEdge(rule);
   state.AddIn(edge, "in1", 0);

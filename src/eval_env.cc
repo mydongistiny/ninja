@@ -12,57 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <assert.h>
-
 #include "eval_env.h"
 
-string BindingEnv::LookupVariable(const string& var) {
-  map<string, string>::iterator i = bindings_.find(var);
-  if (i != bindings_.end())
-    return i->second;
-  if (parent_)
-    return parent_->LookupVariable(var);
-  return "";
+#include <assert.h>
+
+#include "graph.h"
+#include "state.h"
+
+Rule::Rule(const HashedStrView& name) : name_(name) {
+  pos_.base = new BasePosition {{ &State::kBuiltinScope, 0 }}; // leaked
 }
 
-void BindingEnv::AddBinding(const string& key, const string& val) {
-  bindings_[key] = val;
-}
+bool Rule::IsReservedBinding(StringPiece var) {
+  // Cycle detection for rule variable evaluation uses a fixed recursion depth
+  // that's guaranteed to be larger than the number of reserved binding names
+  // listed below.
+  static_assert(EdgeEval::kEvalRecursionLimit == 16,
+                "Unexpected rule variable evaluation recursion limit");
 
-void BindingEnv::AddRule(const Rule* rule) {
-  assert(LookupRuleCurrentScope(rule->name()) == NULL);
-  rules_[rule->name()] = rule;
-}
-
-const Rule* BindingEnv::LookupRuleCurrentScope(const string& rule_name) {
-  map<string, const Rule*>::iterator i = rules_.find(rule_name);
-  if (i == rules_.end())
-    return NULL;
-  return i->second;
-}
-
-const Rule* BindingEnv::LookupRule(const string& rule_name) {
-  map<string, const Rule*>::iterator i = rules_.find(rule_name);
-  if (i != rules_.end())
-    return i->second;
-  if (parent_)
-    return parent_->LookupRule(rule_name);
-  return NULL;
-}
-
-void Rule::AddBinding(const string& key, const EvalString& val) {
-  bindings_[key] = val;
-}
-
-const EvalString* Rule::GetBinding(const string& key) const {
-  Bindings::const_iterator i = bindings_.find(key);
-  if (i == bindings_.end())
-    return NULL;
-  return &i->second;
-}
-
-// static
-bool Rule::IsReservedBinding(const string& var) {
   return var == "command" ||
       var == "depfile" ||
       var == "description" ||
@@ -75,58 +42,129 @@ bool Rule::IsReservedBinding(const string& var) {
       var == "msvc_deps_prefix";
 }
 
-const map<string, const Rule*>& BindingEnv::GetRules() const {
-  return rules_;
+void Binding::Evaluate(std::string* out_append) {
+  if (is_evaluated_.load()) {
+    out_append->append(final_value_);
+    return;
+  }
+
+  std::string str;
+  EvaluateBindingInScope(&str, parsed_value_, pos_.scope_pos());
+  out_append->append(str);
+
+  // Try to store the result so we can use it again later. If we can't acquire
+  // the lock, then another thread has already acquired it and will set the
+  // final binding value.
+  std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
+  if (!lock.owns_lock())
+    return;
+
+  // Check the flag again. Another thread could have set it before this thread
+  // acquired the lock, and if it had, then other threads could already be using
+  // this binding's saved value.
+  if (is_evaluated_.load())
+    return;
+
+  final_value_ = std::move(str);
+  is_evaluated_.store(true);
 }
 
-string BindingEnv::LookupWithFallback(const string& var,
-                                      const EvalString* eval,
-                                      Env* env) {
-  map<string, string>::iterator i = bindings_.find(var);
-  if (i != bindings_.end())
-    return i->second;
+template <typename K, typename V>
+static void ExpandTable(std::unordered_map<K, V>& table, size_t extra_size) {
+  size_t needed_buckets = table.size() + extra_size + 1;
+  if (table.bucket_count() >= needed_buckets)
+    return;
+  table.rehash(needed_buckets * 2);
+};
 
-  if (eval)
-    return eval->Evaluate(env);
-
-  if (parent_)
-    return parent_->LookupVariable(var);
-
-  return "";
+void Scope::ReserveTableSpace(size_t new_bindings, size_t new_rules) {
+  ExpandTable(bindings_, new_bindings);
+  ExpandTable(rules_, new_rules);
 }
 
-string EvalString::Evaluate(Env* env) const {
-  string result;
-  for (TokenList::const_iterator i = parsed_.begin(); i != parsed_.end(); ++i) {
-    if (i->second == RAW)
-      result.append(i->first);
-    else
-      result.append(env->LookupVariable(i->first));
+std::map<std::string, const Rule*> Scope::GetRules() const {
+  std::map<std::string, const Rule*> result;
+  for (std::pair<HashedStrView, Rule*> pair : rules_) {
+    Rule* rule = pair.second;
+    result[rule->name()] = rule;
   }
   return result;
 }
 
-void EvalString::AddText(StringPiece text) {
-  // Add it to the end of an existing RAW token if possible.
-  if (!parsed_.empty() && parsed_.back().second == RAW) {
-    parsed_.back().first.append(text.str_, text.len_);
-  } else {
-    parsed_.push_back(make_pair(text.AsString(), RAW));
-  }
-}
-void EvalString::AddSpecial(StringPiece text) {
-  parsed_.push_back(make_pair(text.AsString(), SPECIAL));
+Binding* Scope::LookupBindingAtPos(const HashedStrView& var, ScopePosition pos) {
+  Scope* scope = pos.scope;
+  if (scope == nullptr) return nullptr;
+
+  auto it = scope->bindings_.find(var);
+  if (it == scope->bindings_.end())
+    return LookupBindingAtPos(var, scope->parent_);
+
+  struct BindingCmp {
+    bool operator()(Binding* x, DeclIndex y) const {
+      return x->pos_.scope_index() < y;
+    }
+  };
+
+  // A binding "Foo = $Foo" is valid; the "$Foo" is not a self-reference but
+  // a reference to the previous binding of Foo. The evaluation of "$Foo"
+  // happens with the same DeclIndex as the "Foo = $Foo" binding, so we want
+  // to find a binding whose ScopePosition is strictly less than the one we're
+  // searching for, not equal to it.
+  std::vector<Binding*>& decls = it->second;
+  auto it2 = std::lower_bound(
+    decls.begin(), decls.end(),
+    pos.index, BindingCmp());
+  if (it2 == decls.begin())
+    return LookupBindingAtPos(var, scope->parent_);
+  return *(it2 - 1);
 }
 
-string EvalString::Serialize() const {
-  string result;
-  for (TokenList::const_iterator i = parsed_.begin();
-       i != parsed_.end(); ++i) {
-    result.append("[");
-    if (i->second == SPECIAL)
-      result.append("$");
-    result.append(i->first);
-    result.append("]");
+Binding* Scope::LookupBinding(const HashedStrView& var, Scope* scope) {
+  if (scope == nullptr) return nullptr;
+
+  auto it = scope->bindings_.find(var);
+  if (it == scope->bindings_.end()) {
+    // When we delegate to the parent scope, we match bindings at the end of the
+    // parent's scope, even if they weren't in scope when the subninja scope was
+    // parsed. The behavior matters after parsing is complete and we're
+    // evaluating edge bindings that involve rule variable expansions.
+    return LookupBinding(var, scope->parent_.scope);
   }
+
+  std::vector<Binding*>& decls = it->second;
+  assert(!decls.empty());
+
+  // Evaluate the binding.
+  return decls.back();
+}
+
+void Scope::EvaluateVariableAtPos(std::string* out_append,
+                                  const HashedStrView& var, ScopePosition pos) {
+  if (Binding* binding = LookupBindingAtPos(var, pos))
+    binding->Evaluate(out_append);
+}
+
+void Scope::EvaluateVariable(std::string* out_append, const HashedStrView& var,
+                             Scope* scope) {
+  if (Binding* binding = LookupBinding(var, scope))
+    binding->Evaluate(out_append);
+}
+
+std::string Scope::LookupVariable(const HashedStrView& var) {
+  std::string result;
+  EvaluateVariable(&result, var, this);
   return result;
+}
+
+Rule* Scope::LookupRuleAtPos(const HashedStrView& rule_name,
+                             ScopePosition pos) {
+  Scope* scope = pos.scope;
+  if (scope == nullptr) return nullptr;
+  auto it = scope->rules_.find(rule_name);
+  if (it != scope->rules_.end()) {
+    Rule* rule = it->second;
+    if (rule->pos_.scope_index() < pos.index)
+      return rule;
+  }
+  return LookupRuleAtPos(rule_name, scope->parent_);
 }

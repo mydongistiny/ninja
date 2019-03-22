@@ -193,8 +193,9 @@ void Plan::EdgeFinished(Edge* edge, EdgeResult result) {
 
 void Plan::NodeFinished(Node* node) {
   // See if we we want any edges from this node.
-  for (vector<Edge*>::const_iterator oe = node->out_edges().begin();
-       oe != node->out_edges().end(); ++oe) {
+  const std::vector<Edge*> out_edges = node->GetOutEdges();
+  for (vector<Edge*>::const_iterator oe = out_edges.begin();
+       oe != out_edges.end(); ++oe) {
     map<Edge*, bool>::iterator want_e = want_.find(*oe);
     if (want_e == want_.end())
       continue;
@@ -215,8 +216,9 @@ void Plan::NodeFinished(Node* node) {
 bool Plan::CleanNode(DependencyScan* scan, Node* node, string* err) {
   node->set_dirty(false);
 
-  for (vector<Edge*>::const_iterator oe = node->out_edges().begin();
-       oe != node->out_edges().end(); ++oe) {
+  const std::vector<Edge*> out_edges = node->GetOutEdges();
+  for (vector<Edge*>::const_iterator oe = out_edges.begin();
+       oe != out_edges.end(); ++oe) {
     // Don't process edges that we don't actually want.
     map<Edge*, bool>::iterator want_e = want_.find(*oe);
     if (want_e == want_.end() || !want_e->second)

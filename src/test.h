@@ -148,6 +148,9 @@ struct VirtualFileSystem : public DiskInterface {
   virtual bool WriteFile(const string& path, const string& contents);
   virtual bool MakeDir(const string& path);
   virtual Status ReadFile(const string& path, string* contents, string* err);
+  virtual Status LoadFile(const std::string& path,
+                          std::unique_ptr<LoadedFile>* result,
+                          std::string* err);
   virtual int RemoveFile(const string& path);
 
   /// An entry for a single in-memory file.
@@ -180,5 +183,10 @@ struct ScopedTempDir {
   /// The subdirectory name for our dir, or empty if it hasn't been set up.
   string temp_dir_name_;
 };
+
+// A C++11 version of operator "" s from C++14's std::string_literals.
+inline std::string operator "" _s(const char* str, size_t len) {
+  return { str, len };
+}
 
 #endif // NINJA_TEST_H_

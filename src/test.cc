@@ -109,35 +109,63 @@ void AssertHash(const char* expected, uint64_t actual) {
 }
 
 void VerifyGraph(const State& state) {
-  for (vector<Edge*>::const_iterator e = state.edges_.begin();
-       e != state.edges_.end(); ++e) {
+  std::set<Node*> edge_nodes;
+  std::map<Node*, Edge*> expected_node_input;
+  std::map<Node*, std::set<Edge*>> expected_node_outputs;
+
+  // An edge ID is always equal to its index in the global edge table.
+  for (size_t idx = 0; idx < state.edges_.size(); ++idx)
+    EXPECT_EQ(idx, state.edges_[idx]->id_);
+
+  // Check that each edge is valid.
+  for (Edge* e : state.edges_) {
     // All edges need at least one output.
-    EXPECT_FALSE((*e)->outputs_.empty());
-    // Check that the edge's inputs have the edge as out-edge.
-    for (vector<Node*>::const_iterator in_node = (*e)->inputs_.begin();
-         in_node != (*e)->inputs_.end(); ++in_node) {
-      const vector<Edge*>& out_edges = (*in_node)->out_edges();
-      EXPECT_NE(find(out_edges.begin(), out_edges.end(), *e),
-                out_edges.end());
+    EXPECT_FALSE(e->outputs_.empty());
+    // Check that the edge's node counts are correct.
+    EXPECT_GE(e->explicit_outs_, 0);
+    EXPECT_GE(e->implicit_outs_, 0);
+    EXPECT_GE(e->explicit_deps_, 0);
+    EXPECT_GE(e->implicit_deps_, 0);
+    EXPECT_GE(e->order_only_deps_, 0);
+    EXPECT_EQ(static_cast<size_t>(e->explicit_outs_ + e->implicit_outs_),
+              e->outputs_.size());
+    EXPECT_EQ(static_cast<size_t>(e->explicit_deps_ + e->implicit_deps_ +
+                                  e->order_only_deps_),
+              e->inputs_.size());
+    // Record everything seen in edges so we can check it against the nodes.
+    for (Node* n : e->inputs_) {
+      edge_nodes.insert(n);
+      expected_node_outputs[n].insert(e);
     }
-    // Check that the edge's outputs have the edge as in-edge.
-    for (vector<Node*>::const_iterator out_node = (*e)->outputs_.begin();
-         out_node != (*e)->outputs_.end(); ++out_node) {
-      EXPECT_EQ((*out_node)->in_edge(), *e);
+    for (Node* n : e->outputs_) {
+      edge_nodes.insert(n);
+      EXPECT_EQ(nullptr, expected_node_input[n]);
+      expected_node_input[n] = e;
     }
   }
 
-  // The union of all in- and out-edges of each nodes should be exactly edges_.
-  set<const Edge*> node_edge_set;
-  for (State::Paths::const_iterator p = state.paths_.begin();
-       p != state.paths_.end(); ++p) {
-    const Node* n = p->second;
-    if (n->in_edge())
-      node_edge_set.insert(n->in_edge());
-    node_edge_set.insert(n->out_edges().begin(), n->out_edges().end());
+  // Verify that any node used by an edge is in the node table.
+  //
+  // N.B. It's OK to have nodes that aren't referenced by any edge. The code
+  // below will verify that such nodes have no in/out edges. This situation can
+  // happen in a couple of ways:
+  //  - Loading the depslog creates a node for every path in the log, but the
+  //    implicit edge<->node links are only created as ninja scans targets for
+  //    dirty nodes.
+  //  - Removing an invalid edge for dupbuild=warn doesn't remove the input
+  //    nodes.
+  for (Node* n : edge_nodes)
+    EXPECT_EQ(n, state.LookupNode(n->path()));
+
+  // Check each node against the set of edges.
+  for (const auto& p : state.paths_) {
+    Node* n = p.second;
+    auto out_edges_vec = n->GetOutEdges();
+    std::set<Edge*> out_edges(out_edges_vec.begin(), out_edges_vec.end());
+    EXPECT_EQ(n, state.LookupNode(n->path()));
+    EXPECT_EQ(expected_node_outputs[n], out_edges);
+    EXPECT_EQ(expected_node_input[n], n->in_edge());
   }
-  set<const Edge*> edge_set(state.edges_.begin(), state.edges_.end());
-  EXPECT_EQ(node_edge_set, edge_set);
 }
 
 void VirtualFileSystem::Create(const string& path,
@@ -169,10 +197,24 @@ bool VirtualFileSystem::MakeDir(const string& path) {
 FileReader::Status VirtualFileSystem::ReadFile(const string& path,
                                                string* contents,
                                                string* err) {
+  // Delegate to the more-general LoadFile.
+  std::unique_ptr<LoadedFile> file;
+  Status result = LoadFile(path, &file, err);
+  if (result == Okay) {
+    *contents = file->content().AsString();
+  }
+  return result;
+}
+
+FileReader::Status VirtualFileSystem::LoadFile(const std::string& path,
+                                               std::unique_ptr<LoadedFile>* result,
+                                               std::string* err) {
   files_read_.push_back(path);
   FileMap::iterator i = files_.find(path);
   if (i != files_.end()) {
-    *contents = i->second.contents;
+    std::string& contents = i->second.contents;
+    *result = std::unique_ptr<HeapLoadedFile>(new HeapLoadedFile(path,
+                                                                 contents));
     return Okay;
   }
   *err = strerror(ENOENT);

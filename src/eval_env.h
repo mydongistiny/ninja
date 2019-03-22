@@ -15,91 +15,197 @@
 #ifndef NINJA_EVAL_ENV_H_
 #define NINJA_EVAL_ENV_H_
 
+#include <assert.h>
+#include <stdint.h>
+
 #include <map>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 using namespace std;
 
+#include "hashed_str_view.h"
+#include "lexer.h"
 #include "string_piece.h"
 
-struct Rule;
+using DeclIndex = uint32_t;
+const DeclIndex kLastDeclIndex = static_cast<DeclIndex>(-1);
 
-/// An interface for a scope for variable (e.g. "$foo") lookups.
-struct Env {
-  virtual ~Env() {}
-  virtual string LookupVariable(const string& var) = 0;
+struct Scope;
+
+/// Position of a declaration within a scope.
+struct ScopePosition {
+  ScopePosition(Scope* scope=nullptr, DeclIndex index=0)
+      : scope(scope), index(index) {}
+
+  Scope* scope = nullptr;
+  DeclIndex index = 0;
 };
 
-/// A tokenized string that contains variable references.
-/// Can be evaluated relative to an Env.
-struct EvalString {
-  string Evaluate(Env* env) const;
+/// Position of a parsed manifest "clump" within its containing scope and within
+/// all manifest files, in DFS order. This field is updated after parallelized
+/// parsing is complete.
+struct BasePosition {
+  BasePosition(ScopePosition scope={}, DeclIndex dfs_location=0)
+      : scope(scope), dfs_location(dfs_location) {}
 
-  void Clear() { parsed_.clear(); }
-  bool empty() const { return parsed_.empty(); }
+  /// The scope location corresponding to this chunk. (Updated during DFS
+  /// manifest parsing.)
+  ScopePosition scope = {};
 
-  void AddText(StringPiece text);
-  void AddSpecial(StringPiece text);
+  /// Location of the chunk's declarations within DFS order of all the ninja
+  /// files. This field is useful for verifying that pool references and default
+  /// target references appear *after* their referents have been declared.
+  DeclIndex dfs_location = 0;
 
-  /// Construct a human-readable representation of the parsed state,
-  /// for use in tests.
-  string Serialize() const;
+  /// Check that the position is valid. (i.e. The clump it belongs to has been
+  /// assigned a scope and a DFS position.)
+  bool initialized() const {
+    return scope.scope != nullptr;
+  }
+};
+
+/// Offset of a manifest declaration relative to the beginning of a "clump" of
+/// declarations.
+struct RelativePosition {
+  RelativePosition(BasePosition* base=nullptr, DeclIndex offset=0)
+      : base(base), offset(offset) {}
+
+  BasePosition* base = nullptr;
+  DeclIndex offset = 0;
+
+  DeclIndex dfs_location() const { Validate(); return base->dfs_location + offset; }
+  DeclIndex scope_index() const { Validate(); return base->scope.index + offset; }
+  Scope* scope() const { Validate(); return base->scope.scope; }
+  ScopePosition scope_pos() const { Validate(); return { base->scope.scope, scope_index() }; }
 
 private:
-  enum TokenType { RAW, SPECIAL };
-  typedef vector<pair<string, TokenType> > TokenList;
-  TokenList parsed_;
+  void Validate() const {
+    assert(base->initialized() && "clump position hasn't been set yet");
+  }
 };
 
 /// An invokable build command and associated metadata (description, etc.).
 struct Rule {
-  explicit Rule(const string& name) : name_(name) {}
+  Rule() {}
 
-  const string& name() const { return name_; }
+  /// This constructor is used to construct built-in rules.
+  explicit Rule(const HashedStrView& name);
 
-  void AddBinding(const string& key, const EvalString& val);
+  const std::string& name() const { return name_.str(); }
+  const HashedStr& name_hashed() const { return name_; }
 
-  static bool IsReservedBinding(const string& var);
+  static bool IsReservedBinding(StringPiece var);
 
-  const EvalString* GetBinding(const string& key) const;
+  const std::string* GetBinding(const HashedStrView& name) const {
+    for (auto it = bindings_.rbegin(); it != bindings_.rend(); ++it) {
+      if (it->first == name)
+        return &it->second;
+    }
+    return nullptr;
+  }
 
- private:
-  // Allow the parsers to reach into this object and fill out its fields.
-  friend struct ManifestParser;
+  /// Temporary fields used only during manifest parsing.
+  struct {
+    /// The position of the rule in its source file. Used for diagnostics.
+    size_t rule_name_diag_pos = 0;
+  } parse_state_;
 
-  string name_;
-  typedef map<string, EvalString> Bindings;
-  Bindings bindings_;
+  RelativePosition pos_;
+  HashedStr name_;
+  std::vector<std::pair<HashedStr, std::string>> bindings_;
 };
 
-/// An Env which contains a mapping of variables to values
-/// as well as a pointer to a parent scope.
-struct BindingEnv : public Env {
-  BindingEnv() : parent_(NULL) {}
-  explicit BindingEnv(BindingEnv* parent) : parent_(parent) {}
+struct Binding {
+  /// This function is thread-safe. It stores a copy of the evaluated binding in
+  /// the Binding object if it hasn't been evaluated yet.
+  void Evaluate(std::string* out_append);
 
-  virtual ~BindingEnv() {}
-  virtual string LookupVariable(const string& var);
+  const std::string& name() { return name_.str(); }
+  const HashedStr& name_hashed() { return name_; }
 
-  void AddRule(const Rule* rule);
-  const Rule* LookupRule(const string& rule_name);
-  const Rule* LookupRuleCurrentScope(const string& rule_name);
-  const map<string, const Rule*>& GetRules() const;
+  RelativePosition pos_;
+  HashedStr name_;
 
-  void AddBinding(const string& key, const string& val);
-
-  /// This is tricky.  Edges want lookup scope to go in this order:
-  /// 1) value set on edge itself (edge_->env_)
-  /// 2) value set on rule, with expansion in the edge's scope
-  /// 3) value set on enclosing scope of edge (edge_->env_->parent_)
-  /// This function takes as parameters the necessary info to do (2).
-  string LookupWithFallback(const string& var, const EvalString* eval,
-                            Env* env);
+  /// The manifest parser initializes this field with the location of the
+  /// binding's unevaluated memory in the loaded manifest file.
+  StringPiece parsed_value_;
 
 private:
-  map<string, string> bindings_;
-  map<string, const Rule*> rules_;
-  BindingEnv* parent_;
+  /// This binding's value is evaluated lazily, but it must be evaluated before
+  /// the manifest files are unloaded.
+  std::atomic<bool> is_evaluated_;
+  std::mutex mutex_;
+  std::string final_value_;
+};
+
+struct Scope {
+  Scope(ScopePosition parent) : parent_(parent) {}
+
+  /// Preallocate space in the hash tables so adding bindings and rules is more
+  /// efficient.
+  void ReserveTableSpace(size_t new_bindings, size_t new_rules);
+
+  void AddBinding(Binding* binding) {
+    bindings_[binding->name_hashed()].push_back(binding);
+  }
+
+  /// Searches for a binding using a scope position (i.e. at parse time).
+  /// Returns nullptr if the binding doesn't exist.
+  static Binding* LookupBindingAtPos(const HashedStrView& var, ScopePosition pos);
+
+  /// Searches for a binding in a scope and its ancestors. The position of a
+  /// binding within its containing scope is ignored (i.e. post-parse lookup
+  /// semantics). Returns nullptr if no binding is found. The Scope pointer may
+  /// be nullptr.
+  static Binding* LookupBinding(const HashedStrView& var, Scope* scope);
+
+  /// Append a ${var} reference using a parse-time scope position.
+  static void EvaluateVariableAtPos(std::string* out_append,
+                                    const HashedStrView& var,
+                                    ScopePosition pos);
+
+  /// Append a ${var} reference using a post-parse scope, which may be nullptr.
+  static void EvaluateVariable(std::string* out_append,
+                               const HashedStrView& var,
+                               Scope* scope);
+
+  /// Convenience method for looking up the value of a binding after manifest
+  /// parsing is finished.
+  std::string LookupVariable(const HashedStrView& var);
+
+  bool AddRule(Rule* rule) {
+    return rules_.insert({ rule->name_hashed(), rule }).second;
+  }
+
+  static Rule* LookupRuleAtPos(const HashedStrView& rule_name,
+                               ScopePosition pos);
+
+  /// Tests use this function to verify that a scope's rules are correct.
+  std::map<std::string, const Rule*> GetRules() const;
+
+  ScopePosition AllocDecls(DeclIndex count) {
+    ScopePosition result = GetCurrentEndOfScope();
+    pos_ += count;
+    return result;
+  }
+
+  ScopePosition GetCurrentEndOfScope() { return { this, pos_ }; }
+
+private:
+  /// The position of this scope within its parent scope.
+  /// (ScopePosition::parent will be nullptr for the root scope.)
+  ScopePosition parent_;
+
+  DeclIndex pos_ = 0;
+
+  std::unordered_map<HashedStrView, std::vector<Binding*>> bindings_;
+
+  /// A scope can only declare a rule with a particular name once. Even if a
+  /// scope has a rule of a given name, a lookup for that name can still find a
+  /// parent scope's rule if the search position comes before this scope's rule.
+  std::unordered_map<HashedStrView, Rule*> rules_;
 };
 
 #endif  // NINJA_EVAL_ENV_H_

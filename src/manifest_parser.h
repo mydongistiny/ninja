@@ -1,4 +1,4 @@
-// Copyright 2011 Google Inc. All Rights Reserved.
+// Copyright 2018 Google Inc. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,12 +17,6 @@
 
 #include <string>
 
-using namespace std;
-
-#include "lexer.h"
-
-struct BindingEnv;
-struct EvalString;
 struct FileReader;
 struct State;
 
@@ -37,54 +31,30 @@ enum PhonyCycleAction {
 };
 
 struct ManifestParserOptions {
-  ManifestParserOptions()
-      : dupe_edge_action_(kDupeEdgeActionWarn),
-        phony_cycle_action_(kPhonyCycleActionWarn) {}
-  DupeEdgeAction dupe_edge_action_;
-  PhonyCycleAction phony_cycle_action_;
+  DupeEdgeAction dupe_edge_action_ = kDupeEdgeActionWarn;
+  PhonyCycleAction phony_cycle_action_ = kPhonyCycleActionWarn;
 };
 
-/// Parses .ninja files.
 struct ManifestParser {
   ManifestParser(State* state, FileReader* file_reader,
-                 ManifestParserOptions options = ManifestParserOptions());
+                 ManifestParserOptions options = ManifestParserOptions())
+      : state_(state),
+        file_reader_(file_reader),
+        options_(options) {}
 
-  /// Load and parse a file. Delegates everything to LoadImpl.
-  bool Load(const string& filename, string* err, Lexer* parent = NULL);
+  /// Load and parse a file.
+  bool Load(const std::string& filename, std::string* err);
 
-  /// Parse a text string of input.  Used by tests.
-  bool ParseTest(const string& input, string* err) {
-    quiet_ = true;
-    return Parse("input", input, err);
-  }
+  /// Parse a text string of input. Used by tests.
+  ///
+  /// Some tests may call ParseTest multiple times with the same State object.
+  /// Each call adds to the previous state; it doesn't replace it.
+  bool ParseTest(const std::string& input, std::string* err);
 
 private:
-  /// Load and parse a file.
-  bool LoadImpl(const string& filename, string* err, Lexer* parent = NULL);
-
-  /// Parse a file, given its contents as a string.
-  bool Parse(const string& filename, const string& input, string* err);
-
-  /// Parse various statement types.
-  bool ParsePool(string* err);
-  bool ParseRule(string* err);
-  bool ParseLet(string* key, EvalString* val, string* err);
-  bool ParseEdge(string* err);
-  bool ParseDefault(string* err);
-
-  /// Parse either a 'subninja' or 'include' line.
-  bool ParseFileInclude(bool new_scope, string* err);
-
-  /// If the next token is not \a expected, produce an error string
-  /// saying "expectd foo, got bar".
-  bool ExpectToken(Lexer::Token expected, string* err);
-
-  State* state_;
-  BindingEnv* env_;
-  FileReader* file_reader_;
-  Lexer lexer_;
+  State* state_ = nullptr;
+  FileReader* file_reader_ = nullptr;
   ManifestParserOptions options_;
-  bool quiet_;
 };
 
 #endif  // NINJA_MANIFEST_PARSER_H_

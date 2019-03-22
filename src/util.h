@@ -21,11 +21,16 @@
 #include <stdint.h>
 #endif
 
+#include <limits.h>
 #include <stdarg.h>
 
+#include <atomic>
+#include <memory>
 #include <string>
 #include <vector>
 using namespace std;
+
+#include "string_piece.h"
 
 #ifdef _MSC_VER
 #define NORETURN __declspec(noreturn)
@@ -68,6 +73,39 @@ void GetWin32EscapedString(const string& input, string* result);
 /// on Windows).
 /// Returns -errno and fills in \a err on error.
 int ReadFile(const string& path, string* contents, string* err);
+
+#ifndef _WIN32
+class Mapping {
+public:
+  Mapping(char* base, size_t file_size, size_t mapping_size)
+      : base_(base), file_size_(file_size), mapping_size_(mapping_size) {}
+  ~Mapping() { unmap(); }
+  void unmap();
+
+  Mapping(const Mapping&) = delete;
+  Mapping& operator=(const Mapping&) = delete;
+
+  char* base() const { return base_; }
+
+  /// This size does not include the extra NUL at the end.
+  size_t file_size() const { return file_size_; }
+
+  /// The size of the entire mapping, including the extra zero page at the end.
+  size_t mapping_size() const { return mapping_size_; }
+
+private:
+  char* base_ = nullptr;
+  size_t file_size_ = 0;
+  size_t mapping_size_ = 0;
+};
+
+/// Map the file into memory as read-only. The file is followed by a zero page,
+/// and the first byte after the file's content is guaranteed to be NUL. The
+/// lexer relies on this property to efficiently detect the end of input.
+int MapFile(const std::string& filename,
+            std::unique_ptr<Mapping>* result,
+            std::string* err);
+#endif  // ! _WIN32
 
 /// Mark a file descriptor to not be inherited on exec()s.
 void SetCloseOnExec(int fd);
@@ -117,6 +155,74 @@ string GetLastErrorString();
 /// Calls Fatal() with a function name and GetLastErrorString.
 NORETURN void Win32Fatal(const char* function);
 #endif
+
+template <typename T, typename U>
+decltype(T() + U()) RoundUp(T x, U y) {
+  return (x + (y - 1)) / y * y;
+}
+
+template <typename T>
+std::vector<std::pair<T, T>> SplitByChunkSize(T total, T chunk_size) {
+  std::vector<std::pair<T, T>> result;
+  result.reserve(total / chunk_size + 1);
+  T start = 0;
+  while (start < total) {
+    T finish = std::min<T>(start + chunk_size, total);
+    result.emplace_back(start, finish);
+    start = finish;
+  }
+  return result;
+}
+
+template <typename T, typename C>
+std::vector<std::pair<T, T>> SplitByCount(T total, C count) {
+  T chunk_size = std::max<T>(1, RoundUp(total, count) / count);
+  return SplitByChunkSize(total, chunk_size);
+}
+
+template <typename T>
+struct IntegralRange {
+  IntegralRange(T start, T stop) : start_(start), stop_(stop) {}
+  size_t size() const { return (stop_ >= start_) ? (stop_ - start_) : 0; }
+  T operator[](size_t idx) const  { return start_ + idx; }
+private:
+  T start_;
+  T stop_;
+};
+
+/// Atomically set |*dest| to the lesser of its current value and the given
+/// |candidate| value, using the given less-than comparator.
+template <typename T, typename LessThan=std::less<T>>
+T AtomicUpdateMinimum(std::atomic<T>* dest, T candidate,
+                      LessThan less_than=LessThan()) {
+  T current = dest->load();
+  while (true) {
+    if (!less_than(candidate, current)) {
+      return current;
+    }
+    if (dest->compare_exchange_weak(current, candidate)) {
+      return candidate;
+    }
+  }
+}
+
+/// Atomically set |*dest| to the greater of its current value and the given
+/// |candidate| value, using the given less-than comparator.
+template <typename T, typename LessThan=std::less<T>>
+T AtomicUpdateMaximum(std::atomic<T>* dest, T candidate,
+                      LessThan less_than=LessThan()) {
+  // The C++ standard library (e.g. std::max) orders values using operator<
+  // rather than operator>, so flip the argument order with a lambda rather than
+  // take a greater-than functor argument.
+  return AtomicUpdateMinimum(dest, candidate, [&](const T& x, const T& y) {
+    return less_than(y, x);
+  });
+}
+
+/// If any string in the given vector is non-empty, copy it to |*err| and return
+/// false. Otherwise return true.
+bool PropagateError(std::string* err,
+                    const std::vector<std::string>& subtask_err);
 
 /// Assign each thread a "slot" within a fixed number of slots. The number of
 /// slots, and each thread's slot index, is fixed until the program exits.

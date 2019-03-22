@@ -16,6 +16,7 @@
 #define NINJA_BUILD_LOG_H_
 
 #include <string>
+#include <unordered_map>
 #include <stdio.h>
 using namespace std;
 
@@ -81,7 +82,7 @@ struct BuildLog {
   /// Rewrite the known log entries, throwing away old data.
   bool Recompact(const string& path, const BuildLogUser& user, string* err);
 
-  typedef ExternalStringHashMap<LogEntry*>::Type Entries;
+  typedef std::unordered_map<StringPiece, LogEntry*> Entries;
   const Entries& entries() const { return entries_; }
 
  private:
