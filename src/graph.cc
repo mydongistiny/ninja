@@ -32,6 +32,7 @@ bool Node::Stat(DiskInterface* disk_interface, string* err) {
 }
 
 bool DependencyScan::RecomputeDirty(Node* node, string* err) {
+  METRIC_RECORD("dep scan");
   vector<Node*> stack;
   return RecomputeDirty(node, &stack, err);
 }
