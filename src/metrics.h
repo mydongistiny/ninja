@@ -139,4 +139,6 @@ struct Stopwatch {
 
 extern Metrics* g_metrics;
 
+void DumpMemoryUsage();
+
 #endif // NINJA_METRICS_H_

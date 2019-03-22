@@ -983,8 +983,9 @@ void NinjaMain::DumpMetrics() {
   printf("\n");
   int count = (int)state_.paths_.size();
   int buckets = (int)state_.paths_.bucket_count();
-  printf("path->node hash load %.2f (%d entries / %d buckets)\n",
-         count / (double) buckets, count, buckets);
+  printf("path->node hash load %.2f (%d entries / %d buckets), %zu edges\n",
+         count / (double) buckets, count, buckets, state_.edges_.size());
+  DumpMemoryUsage();
 }
 
 bool NinjaMain::EnsureBuildDirExists() {

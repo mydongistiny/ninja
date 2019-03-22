@@ -19,7 +19,10 @@
 #include <string.h>
 
 #ifndef _WIN32
+#include <sys/resource.h>
 #include <sys/time.h>
+#include <sys/types.h>
+#include <unistd.h>
 #else
 #include <windows.h>
 #endif
@@ -120,3 +123,38 @@ int64_t GetTimeMillis() {
   return TimerToMicros(HighResTimer()) / 1000;
 }
 
+void DumpMemoryUsage() {
+#if defined(__linux__)
+  std::vector<std::string> words;
+  struct rusage usage {};
+  if (getrusage(RUSAGE_SELF, &usage) == 0) {
+    words.push_back(std::to_string(usage.ru_majflt) + " maj faults");
+    words.push_back(std::to_string(usage.ru_minflt) + " min faults");
+    words.push_back(std::to_string(usage.ru_maxrss / 1024) + " MiB maxrss");
+  }
+  char status_path[256];
+  snprintf(status_path, sizeof(status_path), "/proc/%d/status",
+           static_cast<int>(getpid()));
+  if (FILE* status_fp = fopen(status_path, "r")) {
+    char* line = nullptr;
+    size_t n = 0;
+    while (getline(&line, &n, status_fp) > 0) {
+      unsigned long rss = 0;
+      if (sscanf(line, "VmRSS:\t%lu kB\n", &rss) == 1) {
+        words.push_back(std::to_string(rss / 1024) + " MiB rss");
+      }
+    }
+    free(line);
+    fclose(status_fp);
+  }
+  if (!words.empty()) {
+    for (size_t i = 0; i < words.size(); ++i) {
+      if (i > 0) {
+        printf(", ");
+      }
+      printf("%s", words[i].c_str());
+    }
+    printf("\n");
+  }
+#endif
+}
