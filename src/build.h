@@ -167,11 +167,12 @@ struct Builder {
   /// Clean up after interrupted commands by deleting output files.
   void Cleanup();
 
+  /// Used by tests.
   Node* AddTarget(const string& name, string* err);
 
-  /// Add a target to the build, scanning dependencies.
+  /// Add targets to the build, scanning dependencies.
   /// @return false on error.
-  bool AddTarget(Node* target, string* err);
+  bool AddTargets(const std::vector<Node*>& targets, string* err);
 
   /// Returns true if the build targets are already up to date.
   bool AlreadyUpToDate() const;

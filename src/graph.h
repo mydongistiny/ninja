@@ -32,6 +32,7 @@ struct Edge;
 struct Node;
 struct Pool;
 struct State;
+struct ThreadPool;
 
 /// A reference to a path from the lexer. This path is unevaluated, stored in
 /// mmap'ed memory, and is guaranteed to be followed by a terminating character
@@ -99,6 +100,16 @@ struct Node {
         first_reference_({ kLastDeclIndex, initial_slash_bits }) {}
   ~Node();
 
+  /// Precompute the node's Stat() call from a worker thread with exclusive
+  /// access to this node. Returns false on error.
+  bool PrecomputeStat(DiskInterface* disk_interface, string* err);
+
+  /// After the dependency scan is complete, reset the precomputed mtime so it
+  /// can't affect later StatIfNecessary() calls.
+  void ClearPrecomputedStat() {
+    precomputed_mtime_ = -1;
+  }
+
   /// Return false on error.
   bool Stat(DiskInterface* disk_interface, string* err);
 
@@ -106,13 +117,19 @@ struct Node {
   bool StatIfNecessary(DiskInterface* disk_interface, string* err) {
     if (status_known())
       return true;
+    if (precomputed_mtime_ >= 0) {
+      mtime_ = precomputed_mtime_;
+      return true;
+    }
     return Stat(disk_interface, err);
   }
 
   /// Mark as not-yet-stat()ed and not dirty.
   void ResetState() {
     mtime_ = -1;
+    precomputed_mtime_ = -1;
     dirty_ = false;
+    precomputed_dirtiness_ = false;
   }
 
   /// Mark the Node as already-stat()ed and missing.
@@ -142,6 +159,9 @@ struct Node {
   bool dirty() const { return dirty_; }
   void set_dirty(bool dirty) { dirty_ = dirty; }
   void MarkDirty() { dirty_ = true; }
+
+  bool precomputed_dirtiness() const { return precomputed_dirtiness_; }
+  void set_precomputed_dirtiness(bool value) { precomputed_dirtiness_ = value; }
 
   Edge* in_edge() const { return in_edge_; }
   void set_in_edge(Edge* edge) { in_edge_ = edge; }
@@ -187,10 +207,17 @@ private:
   ///   >0: actual file's mtime
   TimeStamp mtime_ = -1;
 
+  /// If this value is >= 0, it represents a precomputed mtime for the node.
+  TimeStamp precomputed_mtime_ = -1;
+
   /// Dirty is true when the underlying file is out-of-date.
   /// But note that Edge::outputs_ready_ is also used in judging which
   /// edges to build.
   bool dirty_ = false;
+
+  /// Set to true once the node's stat and command-hash info have been
+  /// precomputed.
+  bool precomputed_dirtiness_ = false;
 
   /// A dense integer id for the node, assigned and used by DepsLog.
   int id_ = -1;
@@ -257,13 +284,40 @@ struct Edge {
     VisitDone
   };
 
+  struct DepScanInfo {
+    bool valid = false;
+    bool restat = false;
+    bool generator = false;
+    bool deps = false;
+    bool depfile = false;
+    uint64_t command_hash = 0;
+  };
+
   /// Return true if all inputs' in-edges are ready.
   bool AllInputsReady() const;
 
   /// Expand all variables in a command and return it as a string.
   /// If incl_rsp_file is enabled, the string will also contain the
   /// full contents of a response file (if applicable)
-  string EvaluateCommand(bool incl_rsp_file = false);
+  bool EvaluateCommand(std::string* out_append, bool incl_rsp_file,
+                       std::string* err);
+
+  /// Convenience method. This method must not be called from a worker thread,
+  /// because it could abort with a fatal error. (For consistency with other
+  /// Get*/Evaluate* methods, a better name might be GetCommand.)
+  std::string EvaluateCommand(bool incl_rsp_file = false);
+
+  /// Attempts to evaluate info needed for scanning dependencies.
+  bool PrecomputeDepScanInfo(std::string* err);
+
+  /// Returns dependency-scanning info or exits with a fatal error. These
+  /// methods must not be called until after the manifest has been loaded.
+  const DepScanInfo& ComputeDepScanInfo();
+  uint64_t GetCommandHash()   { return ComputeDepScanInfo().command_hash; }
+  bool IsRestat()             { return ComputeDepScanInfo().restat;       }
+  bool IsGenerator()          { return ComputeDepScanInfo().generator;    }
+  bool UsesDepsLog()          { return ComputeDepScanInfo().deps;         }
+  bool UsesDepfile()          { return ComputeDepScanInfo().depfile;      }
 
   /// Appends the value of |key| to the output buffer. On error, returns false,
   /// and the content of the output buffer is unspecified.
@@ -283,8 +337,6 @@ public:
   ///  - Error reporting should be deterministic, and
   ///  - Fatal() destructs static globals, which a worker thread could be using.
   std::string GetBinding(const HashedStrView& key);
-  bool GetBindingBool(const string& key);
-
   /// Like GetBinding("depfile"), but without shell escaping.
   string GetUnescapedDepfile();
   /// Like GetBinding("rspfile"), but without shell escaping.
@@ -316,9 +368,11 @@ public:
   vector<Node*> outputs_;
   std::vector<std::pair<HashedStr, std::string>> unevaled_bindings_;
   VisitMark mark_ = VisitNone;
+  bool precomputed_dirtiness_ = false;
   size_t id_ = 0;
   bool outputs_ready_ = false;
   bool deps_missing_ = false;
+  DepScanInfo dep_scan_info_;
 
   DeclIndex dfs_location() const { return pos_.dfs_location(); }
   const Rule& rule() const { return *rule_; }
@@ -424,12 +478,17 @@ struct DependencyScan {
         disk_interface_(disk_interface),
         dep_loader_(state, deps_log, disk_interface) {}
 
+  /// Used for tests.
+  bool RecomputeDirty(Node* node, std::string* err) {
+    return RecomputeNodesDirty({ node }, err);
+  }
+
   /// Update the |dirty_| state of the given node by inspecting its input edge.
   /// Examine inputs, outputs, and command lines to judge whether an edge
   /// needs to be re-run, and update outputs_ready_ and each outputs' |dirty_|
   /// state accordingly.
   /// Returns false on failure.
-  bool RecomputeDirty(Node* node, string* err);
+  bool RecomputeNodesDirty(const std::vector<Node*>& nodes, std::string* err);
 
   /// Recompute whether any output of the edge is dirty, if so sets |*dirty|.
   /// Returns false on failure.
@@ -448,13 +507,24 @@ struct DependencyScan {
   }
 
  private:
-  bool RecomputeDirty(Node* node, vector<Node*>* stack, string* err);
+  /// Find the transitive closure of edges and nodes that the given node depends
+  /// on. Each Node and Edge is guaranteed to appear at most once in an output
+  /// vector. The returned lists are not guaranteed to be a superset or a subset
+  /// of the nodes and edges that RecomputeNodesDirty will initialize.
+  void CollectPrecomputeLists(Node* node, std::vector<Node*>* nodes,
+                              std::vector<Edge*>* edges);
+
+  bool PrecomputeNodesDirty(const std::vector<Node*>& nodes,
+                            const std::vector<Edge*>& edges,
+                            ThreadPool* thread_pool, std::string* err);
+
+  bool RecomputeNodeDirty(Node* node, vector<Node*>* stack, string* err);
   bool VerifyDAG(Node* node, vector<Node*>* stack, string* err);
 
   /// Recompute whether a given single output should be marked dirty.
   /// Returns true if so.
   bool RecomputeOutputDirty(Edge* edge, Node* most_recent_input,
-                            const string& command, Node* output);
+                            uint64_t command_hash, Node* output);
 
   BuildLog* build_log_;
   DiskInterface* disk_interface_;

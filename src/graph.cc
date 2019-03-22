@@ -27,18 +27,134 @@
 #include "state.h"
 #include "util.h"
 
+bool Node::PrecomputeStat(DiskInterface* disk_interface, std::string* err) {
+  return (precomputed_mtime_ = disk_interface->Stat(path_.str(), err)) != -1;
+}
+
 bool Node::Stat(DiskInterface* disk_interface, string* err) {
   return (mtime_ = disk_interface->Stat(path_.str(), err)) != -1;
 }
 
-bool DependencyScan::RecomputeDirty(Node* node, string* err) {
+bool DependencyScan::RecomputeNodesDirty(const std::vector<Node*>& initial_nodes,
+                                         std::string* err) {
   METRIC_RECORD("dep scan");
-  vector<Node*> stack;
-  return RecomputeDirty(node, &stack, err);
+  std::vector<Node*> all_nodes;
+  std::vector<Edge*> all_edges;
+  std::unique_ptr<ThreadPool> thread_pool = CreateThreadPool();
+
+  {
+    METRIC_RECORD("dep scan : collect nodes+edges");
+    for (Node* node : initial_nodes)
+      CollectPrecomputeLists(node, &all_nodes, &all_edges);
+  }
+
+  bool success = true;
+  if (!PrecomputeNodesDirty(all_nodes, all_edges, thread_pool.get(), err))
+    success = false;
+
+  if (success) {
+    METRIC_RECORD("dep scan : main pass");
+    vector<Node*> stack;
+    for (Node* node : initial_nodes) {
+      stack.clear();
+      if (!RecomputeNodeDirty(node, &stack, err)) {
+        success = false;
+        break;
+      }
+    }
+  }
+
+  {
+    // Ensure that the precomputed mtime information can't be used after this
+    // dependency scan finishes.
+    METRIC_RECORD("dep scan : clear pre-stat");
+    ParallelMap(thread_pool.get(), all_nodes, [](Node* node) {
+      node->ClearPrecomputedStat();
+    });
+  }
+
+  return success;
 }
 
-bool DependencyScan::RecomputeDirty(Node* node, vector<Node*>* stack,
-                                    string* err) {
+void DependencyScan::CollectPrecomputeLists(Node* node,
+                                            std::vector<Node*>* nodes,
+                                            std::vector<Edge*>* edges) {
+  if (node->precomputed_dirtiness())
+    return;
+  node->set_precomputed_dirtiness(true);
+  nodes->push_back(node);
+
+  Edge* edge = node->in_edge();
+  if (edge && !edge->precomputed_dirtiness_) {
+    edge->precomputed_dirtiness_ = true;
+    edges->push_back(edge);
+    for (Node* node : edge->inputs_) {
+      // Duplicate the dirtiness check here to avoid an unnecessary function
+      // call. (The precomputed_dirtiness() will be inlined, but the recursive
+      // call can't be.)
+      if (!node->precomputed_dirtiness())
+        CollectPrecomputeLists(node, nodes, edges);
+    }
+  }
+
+  // Collect dependencies from the deps log. This pass could also examine
+  // depfiles, but it would be a more intrusive design change, because we don't
+  // want to parse a depfile twice.
+  if (DepsLog::Deps* deps = deps_log()->GetDeps(node)) {
+    for (int i = 0; i < deps->node_count; ++i) {
+      Node* node = deps->nodes[i];
+      // Duplicate the dirtiness check here to avoid an unnecessary function
+      // call.
+      if (!node->precomputed_dirtiness()) {
+        CollectPrecomputeLists(node, nodes, edges);
+      }
+    }
+  }
+}
+
+bool DependencyScan::PrecomputeNodesDirty(const std::vector<Node*>& nodes,
+                                          const std::vector<Edge*>& edges,
+                                          ThreadPool* thread_pool,
+                                          std::string* err) {
+  // Optimize the "null build" case by calling Stat in parallel on every node in
+  // the transitive closure.
+  //
+  // The Windows RealDiskInterface::Stat uses a directory-based cache that isn't
+  // thread-safe. Various tests also uses a non-thread-safe Stat, so disable the
+  // parallelized stat'ing for them as well.
+  if (disk_interface_->IsStatThreadSafe() &&
+      GetOptimalThreadPoolJobCount() > 1) {
+    METRIC_RECORD("dep scan : pre-stat nodes");
+    if (!PropagateError(err, ParallelMap(thread_pool, nodes,
+        [this](Node* node) {
+      // Each node is guaranteed to appear at most once in the collected list
+      // of nodes, so it's safe to modify the nodes from worker threads.
+      std::string err;
+      node->PrecomputeStat(disk_interface_, &err);
+      return err;
+    }))) {
+      return false;
+    }
+  }
+
+  {
+    METRIC_RECORD("dep scan : precompute edge info");
+    if (!PropagateError(err, ParallelMap(thread_pool, edges, [](Edge* edge) {
+      // As with the node list, each edge appears at most once in the
+      // collected list, so it's safe to modify the edges from worker threads.
+      std::string err;
+      edge->PrecomputeDepScanInfo(&err);
+      return err;
+    }))) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool DependencyScan::RecomputeNodeDirty(Node* node, std::vector<Node*>* stack,
+                                        std::string* err) {
   Edge* edge = node->in_edge();
   if (!edge) {
     // If we already visited this leaf node then we are done.
@@ -89,7 +205,7 @@ bool DependencyScan::RecomputeDirty(Node* node, vector<Node*>* stack,
   for (vector<Node*>::iterator i = edge->inputs_.begin();
        i != edge->inputs_.end(); ++i) {
     // Visit this input.
-    if (!RecomputeDirty(*i, stack, err))
+    if (!RecomputeNodeDirty(*i, stack, err))
       return false;
 
     // If an input is not ready, neither are our outputs.
@@ -183,10 +299,11 @@ bool DependencyScan::VerifyDAG(Node* node, vector<Node*>* stack, string* err) {
 
 bool DependencyScan::RecomputeOutputsDirty(Edge* edge, Node* most_recent_input,
                                            bool* outputs_dirty, string* err) {
-  string command = edge->EvaluateCommand(/*incl_rsp_file=*/true);
+
+  uint64_t command_hash = edge->GetCommandHash();
   for (vector<Node*>::iterator o = edge->outputs_.begin();
        o != edge->outputs_.end(); ++o) {
-    if (RecomputeOutputDirty(edge, most_recent_input, command, *o)) {
+    if (RecomputeOutputDirty(edge, most_recent_input, command_hash, *o)) {
       *outputs_dirty = true;
       return true;
     }
@@ -196,7 +313,7 @@ bool DependencyScan::RecomputeOutputsDirty(Edge* edge, Node* most_recent_input,
 
 bool DependencyScan::RecomputeOutputDirty(Edge* edge,
                                           Node* most_recent_input,
-                                          const string& command,
+                                          uint64_t command_hash,
                                           Node* output) {
   if (edge->is_phony()) {
     // Phony edges don't write any output.  Outputs are only dirty if
@@ -226,7 +343,7 @@ bool DependencyScan::RecomputeOutputDirty(Edge* edge,
     // build log.  Use that mtime instead, so that the file will only be
     // considered dirty if an input was modified since the previous run.
     bool used_restat = false;
-    if (edge->GetBindingBool("restat") && build_log() &&
+    if (edge->IsRestat() && build_log() &&
         (entry = build_log()->LookupByOutput(output->path()))) {
       output_mtime = entry->mtime;
       used_restat = true;
@@ -243,10 +360,10 @@ bool DependencyScan::RecomputeOutputDirty(Edge* edge,
   }
 
   if (build_log()) {
-    bool generator = edge->GetBindingBool("generator");
+    bool generator = edge->IsGenerator();
     if (entry || (entry = build_log()->LookupByOutput(output->path()))) {
       if (!generator &&
-          BuildLog::LogEntry::HashCommand(command) != entry->command_hash) {
+          command_hash != entry->command_hash) {
         // May also be dirty due to the command changing since the last build.
         // But if this is a generator rule, the command changing does not make us
         // dirty.
@@ -357,14 +474,74 @@ void EdgeEval::AppendPathList(std::string* out_append,
   }
 }
 
-string Edge::EvaluateCommand(bool incl_rsp_file) {
-  string command = GetBinding("command");
+static const HashedStrView kCommand         { "command" };
+static const HashedStrView kDepfile         { "depfile" };
+static const HashedStrView kRspfile         { "rspfile" };
+static const HashedStrView kRspFileContent  { "rspfile_content" };
+
+bool Edge::EvaluateCommand(std::string* out_append, bool incl_rsp_file,
+                           std::string* err) {
+  METRIC_RECORD("eval command");
+  if (!EvaluateVariable(out_append, kCommand, err))
+    return false;
   if (incl_rsp_file) {
-    string rspfile_content = GetBinding("rspfile_content");
-    if (!rspfile_content.empty())
-      command += ";rspfile=" + rspfile_content;
+    std::string rspfile_content;
+    if (!EvaluateVariable(&rspfile_content, kRspFileContent, err))
+      return false;
+    if (!rspfile_content.empty()) {
+      out_append->append(";rspfile=");
+      out_append->append(rspfile_content);
+    }
   }
+  return true;
+}
+
+std::string Edge::EvaluateCommand(bool incl_rsp_file) {
+  std::string command;
+  std::string err;
+  if (!EvaluateCommand(&command, incl_rsp_file, &err))
+    Fatal("%s", err.c_str());
   return command;
+}
+
+static const HashedStrView kRestat      { "restat" };
+static const HashedStrView kGenerator   { "generator" };
+static const HashedStrView kDeps        { "deps" };
+
+bool Edge::PrecomputeDepScanInfo(std::string* err) {
+  if (dep_scan_info_.valid)
+    return true;
+
+  // Precompute boolean flags.
+  auto get_bool_var = [this, err](const HashedStrView& var,
+                                  EdgeEval::EscapeKind escape, bool* out) {
+    std::string value;
+    if (!EvaluateVariable(&value, var, err, EdgeEval::kFinalScope, escape))
+      return false;
+    *out = !value.empty();
+    return true;
+  };
+  if (!get_bool_var(kRestat,    EdgeEval::kShellEscape, &dep_scan_info_.restat))    return false;
+  if (!get_bool_var(kGenerator, EdgeEval::kShellEscape, &dep_scan_info_.generator)) return false;
+  if (!get_bool_var(kDeps,      EdgeEval::kShellEscape, &dep_scan_info_.deps))      return false;
+  if (!get_bool_var(kDepfile,   EdgeEval::kDoNotEscape, &dep_scan_info_.depfile))   return false;
+
+  // Precompute the command hash.
+  std::string command;
+  if (!EvaluateCommand(&command, /*incl_rsp_file=*/true, err))
+    return false;
+  dep_scan_info_.command_hash = BuildLog::LogEntry::HashCommand(command);
+
+  dep_scan_info_.valid = true;
+  return true;
+}
+
+/// Returns dependency-scanning info or exits with a fatal error.
+const Edge::DepScanInfo& Edge::ComputeDepScanInfo() {
+  std::string err;
+  if (!PrecomputeDepScanInfo(&err))
+    Fatal("%s", err.c_str());
+  return dep_scan_info_;
 }
 
 bool Edge::EvaluateVariable(std::string* out_append, const HashedStrView& key,
@@ -388,16 +565,12 @@ std::string Edge::GetBinding(const HashedStrView& key) {
   return GetBindingImpl(key, EdgeEval::kFinalScope, EdgeEval::kShellEscape);
 }
 
-bool Edge::GetBindingBool(const string& key) {
-  return !GetBinding(key).empty();
-}
-
 std::string Edge::GetUnescapedDepfile() {
-  return GetBindingImpl("depfile", EdgeEval::kFinalScope, EdgeEval::kDoNotEscape);
+  return GetBindingImpl(kDepfile, EdgeEval::kFinalScope, EdgeEval::kDoNotEscape);
 }
 
 std::string Edge::GetUnescapedRspfile() {
-  return GetBindingImpl("rspfile", EdgeEval::kFinalScope, EdgeEval::kDoNotEscape);
+  return GetBindingImpl(kRspfile, EdgeEval::kFinalScope, EdgeEval::kDoNotEscape);
 }
 
 void Edge::Dump(const char* prefix) const {
@@ -525,13 +698,15 @@ void Node::Dump(const char* prefix) const {
 }
 
 bool ImplicitDepLoader::LoadDeps(Edge* edge, string* err) {
-  string deps_type = edge->GetBinding("deps");
-  if (!deps_type.empty())
+  if (edge->UsesDepsLog())
     return LoadDepsFromLog(edge, err);
 
-  string depfile = edge->GetUnescapedDepfile();
-  if (!depfile.empty())
+  if (edge->UsesDepfile()) {
+    std::string depfile = edge->GetUnescapedDepfile();
+    assert(!depfile.empty() &&
+           "UsesDepfile was set, so the depfile should be non-empty");
     return LoadDepFile(edge, depfile, err);
+  }
 
   // No deps to load.
   return true;

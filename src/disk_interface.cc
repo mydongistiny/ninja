@@ -148,6 +148,8 @@ bool DiskInterface::MakeDirs(const string& path) {
 
 // RealDiskInterface -----------------------------------------------------------
 
+/// This function is thread-safe on Unix but not on Windows. See
+/// RealDiskInterface::IsStatThreadSafe.
 TimeStamp RealDiskInterface::Stat(const string& path, string* err) const {
   METRIC_RECORD("node stat");
 #ifdef _WIN32
@@ -193,6 +195,14 @@ TimeStamp RealDiskInterface::Stat(const string& path, string* err) const {
   if (st.st_mtime == 0)
     return 1;
   return st.st_mtime;
+#endif
+}
+
+bool RealDiskInterface::IsStatThreadSafe() const {
+#ifdef _WIN32
+  return false;
+#else
+  return true;
 #endif
 }
 

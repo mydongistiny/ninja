@@ -118,7 +118,7 @@ int Cleaner::CleanAll(bool generator) {
     if ((*e)->is_phony())
       continue;
     // Do not remove generator's files unless generator specified.
-    if (!generator && (*e)->GetBindingBool("generator"))
+    if (!generator && (*e)->IsGenerator())
       continue;
     for (vector<Node*>::iterator out_node = (*e)->outputs_.begin();
          out_node != (*e)->outputs_.end(); ++out_node) {

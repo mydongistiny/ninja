@@ -84,8 +84,8 @@ TEST_F(ParserTest, IgnoreIndentedComments) {
   const Rule* rule = state.root_scope_.GetRules().begin()->second;
   EXPECT_EQ("cat", rule->name());
   Edge* edge = state.GetNode("result", 0)->in_edge();
-  EXPECT_TRUE(edge->GetBindingBool("restat"));
-  EXPECT_FALSE(edge->GetBindingBool("generator"));
+  EXPECT_TRUE(edge->IsRestat());
+  EXPECT_FALSE(edge->IsGenerator());
 }
 
 TEST_F(ParserTest, IgnoreIndentedBlankLines) {

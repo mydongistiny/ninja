@@ -396,22 +396,27 @@ Node* Builder::AddTarget(const string& name, string* err) {
     *err = "unknown target: '" + name + "'";
     return NULL;
   }
-  if (!AddTarget(node, err))
+  if (!AddTargets({ node }, err))
     return NULL;
   return node;
 }
 
-bool Builder::AddTarget(Node* node, string* err) {
-  if (!scan_.RecomputeDirty(node, err))
+bool Builder::AddTargets(const std::vector<Node*> &nodes, string* err) {
+  if (!scan_.RecomputeNodesDirty(nodes, err))
     return false;
 
-  if (Edge* in_edge = node->in_edge()) {
-    if (in_edge->outputs_ready())
-      return true;  // Nothing to do.
+  for (Node* node : nodes) {
+    std::string plan_err;
+    if (!plan_.AddTarget(node, &plan_err)) {
+      if (!plan_err.empty()) {
+        *err = plan_err;
+        return false;
+      } else {
+        // Added a target that is already up-to-date; not really
+        // an error.
+      }
+    }
   }
-
-  if (!plan_.AddTarget(node, err))
-    return false;
 
   return true;
 }
@@ -587,7 +592,7 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
 
   // Restat the edge outputs
   TimeStamp output_mtime = 0;
-  bool restat = edge->GetBindingBool("restat");
+  bool restat = edge->IsRestat();
   if (!config_.dry_run) {
     bool node_cleaned = false;
 

@@ -206,6 +206,7 @@ struct StatTest : public StateTestWithBuiltinRules,
 
   // DiskInterface implementation.
   virtual TimeStamp Stat(const string& path, string* err) const;
+  virtual bool IsStatThreadSafe() const;
   virtual bool WriteFile(const string& path, const string& contents) {
     assert(false);
     return true;
@@ -240,6 +241,10 @@ TimeStamp StatTest::Stat(const string& path, string* err) const {
   if (i == mtimes_.end())
     return 0;  // File not found.
   return i->second;
+}
+
+bool StatTest::IsStatThreadSafe() const {
+  return false;
 }
 
 TEST_F(StatTest, Simple) {

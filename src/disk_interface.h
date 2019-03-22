@@ -104,8 +104,11 @@ struct FileReader {
 /// is RealDiskInterface.
 struct DiskInterface: public FileReader {
   /// stat() a file, returning the mtime, or 0 if missing and -1 on
-  /// other errors.
+  /// other errors. Thread-safe iff IsStatThreadSafe returns true.
   virtual TimeStamp Stat(const string& path, string* err) const = 0;
+
+  /// True if Stat() can be called from multiple threads concurrently.
+  virtual bool IsStatThreadSafe() const = 0;
 
   /// Create a directory, returning false on failure.
   virtual bool MakeDir(const string& path) = 0;
@@ -135,6 +138,7 @@ struct RealDiskInterface : public DiskInterface {
                       {}
   virtual ~RealDiskInterface() {}
   virtual TimeStamp Stat(const string& path, string* err) const;
+  virtual bool IsStatThreadSafe() const;
   virtual bool MakeDir(const string& path);
   virtual bool WriteFile(const string& path, const string& contents);
   virtual Status ReadFile(const string& path, string* contents, string* err);

@@ -184,6 +184,10 @@ TimeStamp VirtualFileSystem::Stat(const string& path, string* err) const {
   return 0;
 }
 
+bool VirtualFileSystem::IsStatThreadSafe() const {
+  return true;
+}
+
 bool VirtualFileSystem::WriteFile(const string& path, const string& contents) {
   Create(path, contents);
   return true;

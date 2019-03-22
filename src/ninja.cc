@@ -264,7 +264,7 @@ bool NinjaMain::RebuildManifest(const char* input_file, string* err,
 
   Builder builder(&state_, config_, &build_log_, &deps_log_, &disk_interface_,
                   status, start_time_millis_);
-  if (!builder.AddTarget(node, err))
+  if (!builder.AddTargets({ node }, err))
     return false;
 
   if (builder.AlreadyUpToDate())
@@ -1013,16 +1013,9 @@ int NinjaMain::RunBuild(int argc, char** argv, Status* status) {
 
   Builder builder(&state_, config_, &build_log_, &deps_log_, &disk_interface_,
                   status, start_time_millis_);
-  for (size_t i = 0; i < targets.size(); ++i) {
-    if (!builder.AddTarget(targets[i], &err)) {
-      if (!err.empty()) {
-        status->Error("%s", err.c_str());
-        return 1;
-      } else {
-        // Added a target that is already up-to-date; not really
-        // an error.
-      }
-    }
+  if (!builder.AddTargets(targets, &err)) {
+    status->Error("%s", err.c_str());
+    return 1;
   }
 
   // Make sure restat rules do not see stale timestamps.
