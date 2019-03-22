@@ -67,6 +67,7 @@ cc_library_host_static {
         "src/proto.cc",
         "src/state.cc",
         "src/status.cc",
+        "src/thread_pool.cc",
         "src/util.cc",
         "src/version.cc",
         "src/browse.cc",

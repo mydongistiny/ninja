@@ -25,8 +25,9 @@
 #include <getopt.h>
 #endif
 
-#include "test.h"
 #include "line_printer.h"
+#include "test.h"
+#include "thread_pool.h"
 
 struct RegisteredTest {
   testing::Test* (*factory)();
@@ -131,6 +132,8 @@ bool testing::Test::Check(bool condition, const char* file, int line,
 
 int main(int argc, char **argv) {
   int tests_started = 0;
+
+  SetThreadPoolThreadCount(16);
 
   const char* test_filter = "*";
   if (!ReadFlags(&argc, &argv, &test_filter))

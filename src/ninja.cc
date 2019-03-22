@@ -43,6 +43,7 @@
 #include "metrics.h"
 #include "state.h"
 #include "status.h"
+#include "thread_pool.h"
 #include "util.h"
 #include "version.h"
 
@@ -830,6 +831,7 @@ bool DebugEnable(const string& name) {
 #ifdef _WIN32
 "  nostatcache  don't batch stat() calls per directory and cache them\n"
 #endif
+"  nothreads    don't use threads to parallelize ninja\n"
 "multiple modes can be enabled via -d FOO -d BAR\n");
     return false;
   } else if (name == "stats") {
@@ -847,11 +849,14 @@ bool DebugEnable(const string& name) {
   } else if (name == "nostatcache") {
     g_experimental_statcache = false;
     return true;
+  } else if (name == "nothreads") {
+    g_use_threads = false;
+    return true;
   } else {
     const char* suggestion =
         SpellcheckString(name.c_str(),
                          "stats", "explain", "keepdepfile", "keeprsp",
-                         "nostatcache", NULL);
+                         "nostatcache", "nothreads", NULL);
     if (suggestion) {
       Error("unknown debug setting '%s', did you mean '%s'?",
             name.c_str(), suggestion);
@@ -1207,6 +1212,8 @@ NORETURN void real_main(int argc, char** argv) {
       exit(1);
     }
   }
+
+  SetThreadPoolThreadCount(g_use_threads ? GetProcessorCount() : 1);
 
   if (options.tool && options.tool->when == Tool::RUN_AFTER_FLAGS) {
     // None of the RUN_AFTER_FLAGS actually use a NinjaMain, but it's needed

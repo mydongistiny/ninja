@@ -19,3 +19,5 @@ bool g_keep_depfile = false;
 bool g_keep_rsp = false;
 
 bool g_experimental_statcache = true;
+
+bool g_use_threads = true;

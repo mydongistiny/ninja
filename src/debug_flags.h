@@ -30,4 +30,6 @@ extern bool g_keep_rsp;
 
 extern bool g_experimental_statcache;
 
+extern bool g_use_threads;
+
 #endif // NINJA_EXPLAIN_H_

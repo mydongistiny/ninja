@@ -33,7 +33,9 @@ using namespace std;
 #define NORETURN __attribute__((noreturn))
 #endif
 
-/// Log a fatal message and exit.
+/// Log a fatal message and exit. This function should not be called from a
+/// worker thread, because doing so would tend to produce interleaved output,
+/// and it might destruct static globals that other threads are using.
 NORETURN void Fatal(const char* msg, ...);
 
 /// Log a warning message.
