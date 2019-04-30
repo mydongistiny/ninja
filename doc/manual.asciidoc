@@ -594,7 +594,7 @@ Ninja supports this processing in two forms.
    to its stdout.  Ninja then filters these lines from the displayed
    output.  No `depfile` attribute is necessary, but the localized string
    in front of the the header file path. For instance
-   `msvc_deps_prefix = Note: including file: `
+   `msvc_deps_prefix = Note: including file:`
    for a English Visual Studio (the default). Should be globally defined.
 +
 ----
@@ -881,7 +881,8 @@ quoting rules are deterimined by the called program, which on Windows
 are usually provided by the C library.  If you need shell
 interpretation of the command (such as the use of `&&` to chain
 multiple commands), make the command execute the Windows shell by
-prefixing the command with `cmd /c`.
+prefixing the command with `cmd /c`. Ninja may error with "invalid parameter"
+which usually indicates that the command line length has been exceeded.
 
 [[ref_outputs]]
 Build outputs

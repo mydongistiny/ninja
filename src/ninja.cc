@@ -169,7 +169,7 @@ struct NinjaMain : public BuildLogUser {
     // Just checking n isn't enough: If an old output is both in the build log
     // and in the deps log, it will have a Node object in state_.  (It will also
     // have an in edge if one of its inputs is another output that's in the deps
-    // log, but having a deps edge product an output thats input to another deps
+    // log, but having a deps edge product an output that's input to another deps
     // edge is rare, and the first recompaction will delete all old outputs from
     // the deps log, and then a second recompaction will clear the build log,
     // which seems good enough for this corner case.)
@@ -218,21 +218,21 @@ void Usage(const BuildConfig& config) {
 "if targets are unspecified, builds the 'default' target (see manual).\n"
 "\n"
 "options:\n"
-"  --version  print ninja version (\"%s\")\n"
+"  --version      print ninja version (\"%s\")\n"
+"  -v, --verbose  show all command lines while building\n"
 "\n"
 "  -C DIR   change to DIR before doing anything else\n"
 "  -f FILE  specify input build file [default=build.ninja]\n"
 "\n"
-"  -j N     run N jobs in parallel [default=%d, derived from CPUs available]\n"
-"  -k N     keep going until N jobs fail [default=1]\n"
+"  -j N     run N jobs in parallel (0 means infinity) [default=%d on this system]\n"
+"  -k N     keep going until N jobs fail (0 means infinity) [default=1]\n"
 "  -l N     do not start new jobs if the load average is greater than N\n"
 "  -n       dry run (don't run commands but act like they succeeded)\n"
-"  -v       show all command lines while building\n"
 "\n"
-"  -d MODE  enable debugging (use -d list to list modes)\n"
-"  -t TOOL  run a subtool (use -t list to list subtools)\n"
+"  -d MODE  enable debugging (use '-d list' to list modes)\n"
+"  -t TOOL  run a subtool (use '-t list' to list subtools)\n"
 "    terminates toplevel options; further flags are passed to the tool\n"
-"  -w FLAG  adjust warnings (use -w list to list warnings)\n"
+"  -w FLAG  adjust warnings (use '-w list' to list warnings)\n"
 #ifndef _WIN32
 "\n"
 "  --frontend COMMAND    execute COMMAND and pass serialized build output to it\n"
@@ -456,7 +456,12 @@ int NinjaMain::ToolBrowse(const Options* options, int argc, char* argv[]) {
   // If we get here, the browse failed.
   return 1;
 }
-#endif  // _WIN32
+#else
+int NinjaMain::ToolBrowse(const Options*, int, char**) {
+  Fatal("browse tool not supported on this platform");
+  return 1;
+}
+#endif
 
 #if defined(_MSC_VER)
 int NinjaMain::ToolMSVC(const Options* options, int argc, char* argv[]) {
@@ -563,7 +568,7 @@ int NinjaMain::ToolDeps(const Options* options, int argc, char** argv) {
     TimeStamp mtime = disk_interface.Stat((*it)->path(), &err);
     if (mtime == -1)
       Error("%s", err.c_str());  // Log and ignore Stat() errors;
-    printf("%s: #deps %d, deps mtime %d (%s)\n",
+    printf("%s: #deps %d, deps mtime %" PRId64 " (%s)\n",
            (*it)->path().c_str(), deps->node_count, deps->mtime,
            (!mtime || mtime > deps->mtime ? "STALE":"VALID"));
     for (int i = 0; i < deps->node_count; ++i)
@@ -731,7 +736,65 @@ void EncodeJSONString(const char *str) {
   }
 }
 
-int NinjaMain::ToolCompilationDatabase(const Options* options, int argc, char* argv[]) {
+enum EvaluateCommandMode {
+  ECM_NORMAL,
+  ECM_EXPAND_RSPFILE
+};
+string EvaluateCommandWithRspfile(Edge* edge, EvaluateCommandMode mode) {
+  string command = edge->EvaluateCommand();
+  if (mode == ECM_NORMAL)
+    return command;
+
+  string rspfile = edge->GetUnescapedRspfile();
+  if (rspfile.empty())
+    return command;
+
+  size_t index = command.find(rspfile);
+  if (index == 0 || index == string::npos || command[index - 1] != '@')
+    return command;
+
+  string rspfile_content = edge->GetBinding("rspfile_content");
+  size_t newline_index = 0;
+  while ((newline_index = rspfile_content.find('\n', newline_index)) !=
+         string::npos) {
+    rspfile_content.replace(newline_index, 1, 1, ' ');
+    ++newline_index;
+  }
+  command.replace(index - 1, rspfile.length() + 1, rspfile_content);
+  return command;
+}
+
+int NinjaMain::ToolCompilationDatabase(const Options* options, int argc,
+                                       char* argv[]) {
+  // The compdb tool uses getopt, and expects argv[0] to contain the name of
+  // the tool, i.e. "compdb".
+  argc++;
+  argv--;
+
+  EvaluateCommandMode eval_mode = ECM_NORMAL;
+
+  optind = 1;
+  int opt;
+  while ((opt = getopt(argc, argv, const_cast<char*>("hx"))) != -1) {
+    switch(opt) {
+      case 'x':
+        eval_mode = ECM_EXPAND_RSPFILE;
+        break;
+
+      case 'h':
+      default:
+        printf(
+            "usage: ninja -t compdb [options] [rules]\n"
+            "\n"
+            "options:\n"
+            "  -x     expand @rspfile style response file invocations\n"
+            );
+        return 1;
+    }
+  }
+  argv += optind;
+  argc -= optind;
+
   bool first = true;
   vector<char> cwd;
 
@@ -757,9 +820,11 @@ int NinjaMain::ToolCompilationDatabase(const Options* options, int argc, char* a
         printf("\n  {\n    \"directory\": \"");
         EncodeJSONString(&cwd[0]);
         printf("\",\n    \"command\": \"");
-        EncodeJSONString((*e)->EvaluateCommand().c_str());
+        EncodeJSONString(EvaluateCommandWithRspfile(*e, eval_mode).c_str());
         printf("\",\n    \"file\": \"");
         EncodeJSONString((*e)->inputs_[0]->path().c_str());
+        printf("\",\n    \"output\": \"");
+        EncodeJSONString((*e)->outputs_[0]->path().c_str());
         printf("\"\n  }");
 
         first = false;
@@ -812,10 +877,8 @@ int NinjaMain::ToolUrtle(const Options* options, int argc, char** argv) {
 /// Returns a Tool, or NULL if Ninja should exit.
 const Tool* ChooseTool(const string& tool_name) {
   static const Tool kTools[] = {
-#if defined(NINJA_HAVE_BROWSE)
     { "browse", "browse dependency graph in a web browser",
       Tool::RUN_AFTER_LOAD, &NinjaMain::ToolBrowse },
-#endif
 #if defined(_MSC_VER)
     { "msvc", "build helper for MSVC cl.exe (EXPERIMENTAL)",
       Tool::RUN_AFTER_FLAGS, &NinjaMain::ToolMSVC },
@@ -1128,6 +1191,7 @@ int ReadFlags(int* argc, char*** argv,
 #endif
     { "help", no_argument, NULL, 'h' },
     { "version", no_argument, NULL, OPT_VERSION },
+    { "verbose", no_argument, NULL, 'v' },
     { NULL, 0, NULL, 0 }
   };
 
@@ -1146,9 +1210,12 @@ int ReadFlags(int* argc, char*** argv,
       case 'j': {
         char* end;
         int value = strtol(optarg, &end, 10);
-        if (*end != 0 || value <= 0)
+        if (*end != 0 || value < 0)
           Fatal("invalid -j parameter");
-        config->parallelism = value;
+
+        // We want to run N jobs in parallel. For N = 0, INT_MAX
+        // is close enough to infinite for most sane builds.
+        config->parallelism = value > 0 ? value : INT_MAX;
         break;
       }
       case 'k': {
@@ -1236,6 +1303,7 @@ NORETURN void real_main(int argc, char** argv) {
   BuildConfig config;
   Options options = {};
   options.input_file = "build.ninja";
+  options.dupe_edges_should_err = true;
 
   setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
   const char* ninja_command = argv[0];

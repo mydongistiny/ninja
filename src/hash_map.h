@@ -16,14 +16,7 @@
 #define NINJA_HASH_MAP_H_
 
 #include <string.h>
-
-#ifndef FALLTHROUGH_INTENDED
-#if defined(__has_cpp_attribute) && __has_cpp_attribute(clang::fallthrough)
-#define FALLTHROUGH_INTENDED [[clang::fallthrough]]
-#else
-#define FALLTHROUGH_INTENDED
-#endif
-#endif
+#include "util.h"
 
 // MurmurHash2, by Austin Appleby
 static inline
@@ -45,8 +38,10 @@ unsigned int MurmurHash2(const void* key, size_t len) {
     len -= 4;
   }
   switch (len) {
-  case 3: h ^= data[2] << 16; FALLTHROUGH_INTENDED;
-  case 2: h ^= data[1] << 8; FALLTHROUGH_INTENDED;
+  case 3: h ^= data[2] << 16;
+          NINJA_FALLTHROUGH;
+  case 2: h ^= data[1] << 8;
+          NINJA_FALLTHROUGH;
   case 1: h ^= data[0];
     h *= m;
   };

@@ -20,6 +20,9 @@
 #include <string.h>
 #ifndef _WIN32
 #include <unistd.h>
+#elif defined(_MSC_VER) && (_MSC_VER < 1900)
+typedef __int32 int32_t;
+typedef unsigned __int32 uint32_t;
 #endif
 
 #include <numeric>
@@ -37,7 +40,7 @@ static constexpr StringPiece kFileSignature { "# ninjadeps\n", 12 };
 static_assert(kFileSignature.size() % 4 == 0,
               "file signature size is not a multiple of 4");
 static constexpr size_t kFileHeaderSize = kFileSignature.size() + 4;
-const int kCurrentVersion = 3;
+const int kCurrentVersion = 4;
 
 // Record size is currently limited to less than the full 32 bit, due to
 // internal buffers having to have this size.
@@ -131,7 +134,7 @@ bool DepsLog::RecordDeps(Node* node, TimeStamp mtime,
     return true;
 
   // Update on-disk representation.
-  unsigned size = 4 * (1 + 1 + node_count);
+  unsigned size = 4 * (1 + 2 + node_count);
   if (size > kMaxRecordSize) {
     errno = ERANGE;
     return false;
@@ -142,8 +145,11 @@ bool DepsLog::RecordDeps(Node* node, TimeStamp mtime,
   int id = node->id();
   if (fwrite(&id, 4, 1, file_) < 1)
     return false;
-  int timestamp = mtime;
-  if (fwrite(&timestamp, 4, 1, file_) < 1)
+  uint32_t mtime_part = static_cast<uint32_t>(mtime & 0xffffffff);
+  if (fwrite(&mtime_part, 4, 1, file_) < 1)
+    return false;
+  mtime_part = static_cast<uint32_t>((mtime >> 32) & 0xffffffff);
+  if (fwrite(&mtime_part, 4, 1, file_) < 1)
     return false;
   for (int i = 0; i < node_count; ++i) {
     id = nodes[i]->id();
@@ -187,7 +193,7 @@ static inline bool IsValidDepsRecordHeader(size_t header) {
   return IsDepsRecordHeader(header) && RecordSizeInWords(header);
 }
 
-/// Split the v3 deps log into independently-parseable chunks using a heuristic.
+/// Split the v4 deps log into independently-parseable chunks using a heuristic.
 /// If the heuristic fails, we'll still load the file correctly, but it could be
 /// slower.
 ///
@@ -202,7 +208,7 @@ static inline bool IsValidDepsRecordHeader(size_t header) {
 ///    deps:
 ///     - uint32 size -- high bit is set
 ///     - int32 output_path_id
-///     - uint32 output_path_mtime
+///     - uint64 output_path_mtime
 ///     - int32 input_path_id[...] -- every remaining word is an input ID
 ///
 /// To split the deps log into chunks, look for uint32 words with the value
@@ -214,19 +220,24 @@ static inline bool IsValidDepsRecordHeader(size_t header) {
 ///    Android build typically has about 1 million nodes.
 ///  - It's unlikely to be part of a path checksum, because that would also
 ///    imply that we have at least 2 billion nodes.
-///  - It could be an mtime from 1901, which we rule out by looking for the
-///    mtime's deps size two words above the split candidate.
+///  - It could be the upper word of a mtime from 2262, or the lower word, which
+///    wraps every ~4s. We rule these out by looking for the mtime's deps size
+///    two or three words above the split candidate.
 ///
 /// This heuristic can fail in a few ways:
 ///  - We only find path records in the area we scan.
 ///  - The deps records all have >16K of dependencies. (Almost all deps records
 ///    I've seen in the Android build have a few hundred. Only a few have ~10K.)
-///  - The area contains only deps entries with an mtime from 1901 and one
-///    dependency.
+///  - All deps records with <16K of dependencies are preceded by something that
+///    the mtime check rejects:
+///     - A deps record with an mtime within a 524us span every 4s, with one
+///       dependency.
+///     - A deps record with an mtime from 2262, with one or two dependencies.
+///     - A path record containing "xx xx 0[0-7] 80" (little-endian) or "80 0[0-7] xx xx"
+///       (big-endian) as the last or second-to-last word. The "0[0-7]" is a
+///       control character, and "0[0-7] 80" is invalid UTF-8.
 ///
-/// Maybe we can add a delimiter to the log format and replace this code. I
-/// believe this heuristic can be adapted to work with the v4 format, which
-/// expands the mtime to 64-bits.
+/// Maybe we can add a delimiter to the log format and replace this code.
 static std::vector<std::pair<size_t, size_t>>
 SplitDepsLog(const uint32_t* table, size_t size, ThreadPool* thread_pool) {
   if (size == 0) return {};
@@ -237,14 +248,15 @@ SplitDepsLog(const uint32_t* table, size_t size, ThreadPool* thread_pool) {
 
   auto split_candidates = ParallelMap(thread_pool, blind_splits,
       [table](std::pair<size_t, size_t> chunk) {
-    // Skip the first two words to allow for the 1901 mtime check later on.
-    for (size_t index = chunk.first + 2; index < chunk.second; ++index) {
+    // Skip the first two words to allow for the mtime check later on.
+    for (size_t index = chunk.first + 3; index < chunk.second; ++index) {
       size_t this_header = table[index];
       if (!IsValidDepsRecordHeader(this_header)) continue;
       if ((this_header & 0xFFFF0000) != 0x80000000) continue;
 
-      // We've either found a deps record or a 1901 mtime (unlikely). If it's an
-      // mtime, the word two spaces back will be a valid deps size (0x800xxxxx).
+      // We've either found a deps record or a mtime. If it's an mtime, the
+      // word two or three spaces back will be a valid deps size (0x800xxxxx).
+      if (IsValidDepsRecordHeader(table[index - 3])) continue;
       if (IsValidDepsRecordHeader(table[index - 2])) continue;
 
       // Success: In a valid deps log, this index must start a deps record.
@@ -397,7 +409,7 @@ bool DepsLog::Load(const string& path, State* state, string* err) {
         // Verify that input/output node IDs are valid.
         int output_id = log.table[index + 1];
         if (output_id < 0 || output_id >= next_node_id) break;
-        for (size_t i = 3; i < size; ++i) {
+        for (size_t i = 4; i < size; ++i) {
           int input_id = log.table[index + i];
           if (input_id < 0 || input_id >= next_node_id) break;
         }
@@ -478,11 +490,13 @@ bool DepsLog::Load(const string& path, State* state, string* err) {
       size_t size = RecordSizeInWords(header);
       assert(size != 0 && IsDepsRecordHeader(header));
       int output_id = log.table[index + 1];
-      int mtime = log.table[index + 2];
-      int deps_count = size - 3;
+      TimeStamp mtime;
+      mtime = (TimeStamp)(((uint64_t)(unsigned int)log.table[index+3] << 32) |
+                          (uint64_t)(unsigned int)log.table[index+2]);
+      int deps_count = size - 4;
       Deps* deps = new Deps(mtime, deps_count);
       for (int i = 0; i < deps_count; ++i) {
-        int input_id = log.table[index + 3 + i];
+        int input_id = log.table[index + 4 + i];
         Node* node = nodes_[input_id];
         assert(node != nullptr);
         deps->nodes[i] = node;

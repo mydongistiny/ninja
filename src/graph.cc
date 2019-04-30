@@ -351,7 +351,7 @@ bool DependencyScan::RecomputeOutputDirty(Edge* edge,
 
     if (output_mtime < most_recent_input->mtime()) {
       EXPLAIN("%soutput %s older than most recent input %s "
-              "(%d vs %d)",
+              "(%" PRId64 " vs %" PRId64 ")",
               used_restat ? "restat of " : "", output->path().c_str(),
               most_recent_input->path().c_str(),
               output_mtime, most_recent_input->mtime());
@@ -375,7 +375,7 @@ bool DependencyScan::RecomputeOutputDirty(Edge* edge,
         // mtime of the most recent input.  This can occur even when the mtime
         // on disk is newer if a previous run wrote to the output file but
         // exited with an error or was interrupted.
-        EXPLAIN("recorded mtime of %s older than most recent input %s (%d vs %d)",
+        EXPLAIN("recorded mtime of %s older than most recent input %s (%" PRId64 " vs %" PRId64 ")",
                 output->path().c_str(), most_recent_input->path().c_str(),
                 entry->mtime, most_recent_input->mtime());
         return true;
@@ -680,7 +680,7 @@ void Node::AddOutEdge(Edge* edge) {
 }
 
 void Node::Dump(const char* prefix) const {
-  printf("%s <%s 0x%p> mtime: %d%s, (:%s), ",
+  printf("%s <%s 0x%p> mtime: %" PRId64 "%s, (:%s), ",
          prefix, path().c_str(), this,
          mtime(), mtime() ? "" : " (:missing)",
          dirty() ? " dirty" : " clean");
@@ -788,7 +788,7 @@ bool ImplicitDepLoader::LoadDepsFromLog(Edge* edge, string* err) {
 
   // Deps are invalid if the output is newer than the deps.
   if (output->mtime() > deps->mtime) {
-    EXPLAIN("stored deps info out of date for '%s' (%d vs %d)",
+    EXPLAIN("stored deps info out of date for '%s' (%" PRId64 " vs %" PRId64 ")",
             output->path().c_str(), deps->mtime, output->mtime());
     return false;
   }

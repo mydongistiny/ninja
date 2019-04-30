@@ -40,13 +40,8 @@
 #include "metrics.h"
 #include "parallel_map.h"
 #include "util.h"
-
-#ifndef FALLTHROUGH_INTENDED
-#if defined(__has_cpp_attribute) && __has_cpp_attribute(clang::fallthrough)
-#define FALLTHROUGH_INTENDED [[clang::fallthrough]]
-#else
-#define FALLTHROUGH_INTENDED
-#endif
+#if defined(_MSC_VER) && (_MSC_VER < 1800)
+#define strtoll _strtoi64
 #endif
 
 // Implementation details:
@@ -90,12 +85,18 @@ uint64_t MurmurHash64A(const void* key, size_t len) {
   }
   switch (len & 7)
   {
-  case 7: h ^= uint64_t(data[6]) << 48; FALLTHROUGH_INTENDED;
-  case 6: h ^= uint64_t(data[5]) << 40; FALLTHROUGH_INTENDED;
-  case 5: h ^= uint64_t(data[4]) << 32; FALLTHROUGH_INTENDED;
-  case 4: h ^= uint64_t(data[3]) << 24; FALLTHROUGH_INTENDED;
-  case 3: h ^= uint64_t(data[2]) << 16; FALLTHROUGH_INTENDED;
-  case 2: h ^= uint64_t(data[1]) << 8; FALLTHROUGH_INTENDED;
+  case 7: h ^= uint64_t(data[6]) << 48;
+          NINJA_FALLTHROUGH;
+  case 6: h ^= uint64_t(data[5]) << 40;
+          NINJA_FALLTHROUGH;
+  case 5: h ^= uint64_t(data[4]) << 32;
+          NINJA_FALLTHROUGH;
+  case 4: h ^= uint64_t(data[3]) << 24;
+          NINJA_FALLTHROUGH;
+  case 3: h ^= uint64_t(data[2]) << 16;
+          NINJA_FALLTHROUGH;
+  case 2: h ^= uint64_t(data[1]) << 8;
+          NINJA_FALLTHROUGH;
   case 1: h ^= uint64_t(data[0]);
           h *= m;
   };
@@ -181,6 +182,9 @@ bool BuildLog::RecordCommand(Edge* edge, int start_time, int end_time,
     if (log_file_) {
       if (!WriteEntry(log_file_, *log_entry))
         return false;
+      if (fflush(log_file_) != 0) {
+          return false;
+      }
     }
   }
   return true;
@@ -448,7 +452,7 @@ bool BuildLog::Load(const string& path, string* err) {
     // Initialize the entry object.
     entry->start_time = atoi(parsed_line.start_time.data());
     entry->end_time = atoi(parsed_line.end_time.data());
-    entry->mtime = atol(parsed_line.mtime.data());
+    entry->mtime = strtoll(parsed_line.mtime.data(), nullptr, 10);
     entry->command_hash = static_cast<uint64_t>(
         strtoull(parsed_line.command_hash.data(), nullptr, 16));
   });
@@ -478,7 +482,7 @@ BuildLog::LogEntry* BuildLog::LookupByOutput(const HashedStrView& path) {
 }
 
 bool BuildLog::WriteEntry(FILE* f, const LogEntry& entry) {
-  return fprintf(f, "%d\t%d\t%d\t%s\t%" PRIx64 "\n",
+  return fprintf(f, "%d\t%d\t%" PRId64 "\t%s\t%" PRIx64 "\n",
           entry.start_time, entry.end_time, entry.mtime,
           entry.output.c_str(), entry.command_hash) > 0;
 }
