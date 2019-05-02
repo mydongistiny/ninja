@@ -28,11 +28,19 @@
 #include "util.h"
 
 bool Node::PrecomputeStat(DiskInterface* disk_interface, std::string* err) {
-  return (precomputed_mtime_ = disk_interface->Stat(path_.str(), err)) != -1;
+  if (in_edge() != nullptr) {
+    return (precomputed_mtime_ = disk_interface->LStat(path_.str(), err)) != -1;
+  } else {
+    return (precomputed_mtime_ = disk_interface->Stat(path_.str(), err)) != -1;
+  }
 }
 
 bool Node::Stat(DiskInterface* disk_interface, string* err) {
-  return (mtime_ = disk_interface->Stat(path_.str(), err)) != -1;
+  if (in_edge() != nullptr) {
+    return (mtime_ = disk_interface->LStat(path_.str(), err)) != -1;
+  } else {
+    return (mtime_ = disk_interface->Stat(path_.str(), err)) != -1;
+  }
 }
 
 bool DependencyScan::RecomputeNodesDirty(const std::vector<Node*>& initial_nodes,

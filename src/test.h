@@ -148,6 +148,7 @@ struct VirtualFileSystem : public DiskInterface {
 
   // DiskInterface
   virtual TimeStamp Stat(const string& path, string* err) const;
+  virtual TimeStamp LStat(const string& path, string* err) const;
   virtual bool IsStatThreadSafe() const;
   virtual bool WriteFile(const string& path, const string& contents);
   virtual bool MakeDir(const string& path);

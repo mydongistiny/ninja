@@ -195,6 +195,15 @@ TimeStamp VirtualFileSystem::Stat(const string& path, string* err) const {
   return 0;
 }
 
+TimeStamp VirtualFileSystem::LStat(const string& path, string* err) const {
+  FileMap::const_iterator i = files_.find(path);
+  if (i != files_.end()) {
+    *err = i->second.stat_error;
+    return i->second.mtime;
+  }
+  return 0;
+}
+
 bool VirtualFileSystem::IsStatThreadSafe() const {
   return true;
 }

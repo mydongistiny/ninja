@@ -380,8 +380,8 @@ void Builder::Cleanup() {
         // mentioned in a depfile, and the command touches its depfile
         // but is interrupted before it touches its output file.)
         string err;
-        TimeStamp new_mtime = disk_interface_->Stat((*o)->path(), &err);
-        if (new_mtime == -1)  // Log and ignore Stat() errors.
+        TimeStamp new_mtime = disk_interface_->LStat((*o)->path(), &err);
+        if (new_mtime == -1)  // Log and ignore LStat() errors.
           status_->Error("%s", err.c_str());
         if (!depfile.empty() || (*o)->mtime() != new_mtime)
           disk_interface_->RemoveFile((*o)->path());
@@ -600,7 +600,7 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
 
     for (vector<Node*>::iterator o = edge->outputs_.begin();
          o != edge->outputs_.end(); ++o) {
-      TimeStamp new_mtime = disk_interface_->Stat((*o)->path(), err);
+      TimeStamp new_mtime = disk_interface_->LStat((*o)->path(), err);
       if (new_mtime == -1)
         return false;
       if (new_mtime > output_mtime)
@@ -621,7 +621,12 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
       // (existing) non-order-only input or the depfile.
       for (vector<Node*>::iterator i = edge->inputs_.begin();
            i != edge->inputs_.end() - edge->order_only_deps_; ++i) {
-        TimeStamp input_mtime = disk_interface_->Stat((*i)->path(), err);
+        TimeStamp input_mtime;
+        if ((*i)->in_edge() != nullptr) {
+          input_mtime = disk_interface_->LStat((*i)->path(), err);
+        } else {
+          input_mtime = disk_interface_->Stat((*i)->path(), err);
+        }
         if (input_mtime == -1)
           return false;
         if (input_mtime > restat_mtime)
@@ -662,7 +667,7 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
 
   if (!deps_type.empty() && !config_.dry_run) {
     Node* out = edge->outputs_[0];
-    TimeStamp deps_mtime = disk_interface_->Stat(out->path(), err);
+    TimeStamp deps_mtime = disk_interface_->LStat(out->path(), err);
     if (deps_mtime == -1)
       return false;
     if (!scan_.deps_log()->RecordDeps(out, deps_mtime, deps_nodes)) {

@@ -176,7 +176,7 @@ struct NinjaMain : public BuildLogUser {
     // Do keep entries around for files which still exist on disk, for
     // generators that want to use this information.
     string err;
-    TimeStamp mtime = disk_interface_.Stat(s.AsString(), &err);
+    TimeStamp mtime = disk_interface_.LStat(s.AsString(), &err);
     if (mtime == -1)
       Error("%s", err.c_str());  // Log and ignore Stat() errors.
     return mtime == 0;

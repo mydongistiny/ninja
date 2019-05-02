@@ -153,6 +153,32 @@ bool DiskInterface::MakeDirs(const string& path) {
 
 // RealDiskInterface -----------------------------------------------------------
 
+#ifndef _WIN32
+static TimeStamp StatTimestamp(const struct stat& st) {
+  // Some users (Flatpak) set mtime to 0, this should be harmless
+  // and avoids conflicting with our return value of 0 meaning
+  // that it doesn't exist.
+  if (st.st_mtime == 0)
+    return 1;
+#if defined(__APPLE__) && !defined(_POSIX_C_SOURCE)
+  return ((int64_t)st.st_mtimespec.tv_sec * 1000000000LL +
+          st.st_mtimespec.tv_nsec);
+#elif (_POSIX_C_SOURCE >= 200809L || _XOPEN_SOURCE >= 700 || defined(_BSD_SOURCE) || defined(_SVID_SOURCE) || \
+       defined(__BIONIC__) || (defined (__SVR4) && defined (__sun)) || defined(__FreeBSD__))
+  // For glibc, see "Timestamp files" in the Notes of http://www.kernel.org/doc/man-pages/online/pages/man2/stat.2.html
+  // newlib, uClibc and musl follow the kernel (or Cygwin) headers and define the right macro values above.
+  // For bsd, see https://github.com/freebsd/freebsd/blob/master/sys/sys/stat.h and similar
+  // For bionic, C and POSIX API is always enabled.
+  // For solaris, see https://docs.oracle.com/cd/E88353_01/html/E37841/stat-2.html.
+  return (int64_t)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec;
+#elif defined(_AIX)
+  return (int64_t)st.st_mtime * 1000000000LL + st.st_mtime_n;
+#else
+  return (int64_t)st.st_mtime * 1000000000LL + st.st_mtimensec;
+#endif
+}
+#endif
+
 /// This function is thread-safe on Unix but not on Windows. See
 /// RealDiskInterface::IsStatThreadSafe.
 TimeStamp RealDiskInterface::Stat(const string& path, string* err) const {
@@ -199,27 +225,23 @@ TimeStamp RealDiskInterface::Stat(const string& path, string* err) const {
     *err = "stat(" + path + "): " + strerror(errno);
     return -1;
   }
-  // Some users (Flatpak) set mtime to 0, this should be harmless
-  // and avoids conflicting with our return value of 0 meaning
-  // that it doesn't exist.
-  if (st.st_mtime == 0)
-    return 1;
-#if defined(__APPLE__) && !defined(_POSIX_C_SOURCE)
-  return ((int64_t)st.st_mtimespec.tv_sec * 1000000000LL +
-          st.st_mtimespec.tv_nsec);
-#elif (_POSIX_C_SOURCE >= 200809L || _XOPEN_SOURCE >= 700 || defined(_BSD_SOURCE) || defined(_SVID_SOURCE) || \
-       defined(__BIONIC__) || (defined (__SVR4) && defined (__sun)) || defined(__FreeBSD__))
-  // For glibc, see "Timestamp files" in the Notes of http://www.kernel.org/doc/man-pages/online/pages/man2/stat.2.html
-  // newlib, uClibc and musl follow the kernel (or Cygwin) headers and define the right macro values above.
-  // For bsd, see https://github.com/freebsd/freebsd/blob/master/sys/sys/stat.h and similar
-  // For bionic, C and POSIX API is always enabled.
-  // For solaris, see https://docs.oracle.com/cd/E88353_01/html/E37841/stat-2.html.
-  return (int64_t)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec;
-#elif defined(_AIX)
-  return (int64_t)st.st_mtime * 1000000000LL + st.st_mtime_n;
-#else
-  return (int64_t)st.st_mtime * 1000000000LL + st.st_mtimensec;
+  return StatTimestamp(st);
 #endif
+}
+
+TimeStamp RealDiskInterface::LStat(const string& path, string* err) const {
+  METRIC_RECORD("node lstat");
+#ifdef _WIN32
+#error unimplemented
+#else
+  struct stat st;
+  if (lstat(path.c_str(), &st) < 0) {
+    if (errno == ENOENT || errno == ENOTDIR)
+      return 0;
+    *err = "lstat(" + path + "): " + strerror(errno);
+    return -1;
+  }
+  return StatTimestamp(st);
 #endif
 }
 

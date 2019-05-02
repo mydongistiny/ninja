@@ -350,7 +350,7 @@ TEST_F(GraphTest, OutputSymlinkSourceUpdate) {
   EXPECT_TRUE(scan_.RecomputeDirty(GetNode("out"), &err));
   ASSERT_EQ("", err);
 
-  EXPECT_TRUE(GetNode("out")->dirty());
+  EXPECT_FALSE(GetNode("out")->dirty());
 }
 
 TEST_F(GraphTest, OutputSymlinkDangling) {
@@ -365,7 +365,7 @@ TEST_F(GraphTest, OutputSymlinkDangling) {
   EXPECT_TRUE(scan_.RecomputeDirty(GetNode("out"), &err));
   ASSERT_EQ("", err);
 
-  EXPECT_TRUE(GetNode("out")->dirty());
+  EXPECT_FALSE(GetNode("out")->dirty());
 }
 
 TEST_F(GraphTest, InputSymlink) {
