@@ -144,6 +144,7 @@ struct BuildConfig {
                   failures_allowed(1), max_load_average(-0.0f),
                   frontend(NULL), frontend_file(NULL),
                   missing_depfile_should_err(false),
+                  uses_phony_outputs(false),
                   output_directory_should_err(false) {}
 
   enum Verbosity {
@@ -167,6 +168,10 @@ struct BuildConfig {
 
   /// Whether a missing depfile should warn or print an error.
   bool missing_depfile_should_err;
+
+  /// Whether the generator uses 'phony_output's
+  /// Controls the warnings below
+  bool uses_phony_outputs;
 
   /// Whether an output can be a directory
   bool output_directory_should_err;

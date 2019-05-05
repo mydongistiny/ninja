@@ -230,6 +230,10 @@ bool Plan::CleanNode(DependencyScan* scan, Node* node, string* err) {
     if ((*oe)->deps_missing_)
       continue;
 
+    // No need to clean a phony output edge, as it's always dirty
+    if ((*oe)->IsPhonyOutput())
+      continue;
+
     // If all non-order-only inputs for this edge are now clean,
     // we might have changed the dirty state of the outputs.
     vector<Node*>::iterator
@@ -355,7 +359,7 @@ Builder::Builder(State* state, const BuildConfig& config,
                  int64_t start_time_millis)
     : state_(state), config_(config), status_(status),
       start_time_millis_(start_time_millis), disk_interface_(disk_interface),
-      scan_(state, build_log, deps_log, disk_interface) {
+      scan_(state, build_log, deps_log, disk_interface, config.uses_phony_outputs) {
 }
 
 Builder::~Builder() {
@@ -369,6 +373,8 @@ void Builder::Cleanup() {
 
     for (vector<Edge*>::iterator e = active_edges.begin();
          e != active_edges.end(); ++e) {
+      if ((*e)->IsPhonyOutput())
+        continue;
       string depfile = (*e)->GetUnescapedDepfile();
       for (vector<Node*>::iterator o = (*e)->outputs_.begin();
            o != (*e)->outputs_.end(); ++o) {
@@ -528,12 +534,14 @@ bool Builder::StartEdge(Edge* edge, string* err) {
 
   status_->BuildEdgeStarted(edge, start_time_millis);
 
-  // Create directories necessary for outputs.
-  // XXX: this will block; do we care?
-  for (vector<Node*>::iterator o = edge->outputs_.begin();
-       o != edge->outputs_.end(); ++o) {
-    if (!disk_interface_->MakeDirs((*o)->path()))
-      return false;
+  if (!edge->IsPhonyOutput()) {
+    // Create directories necessary for outputs.
+    // XXX: this will block; do we care?
+    for (vector<Node*>::iterator o = edge->outputs_.begin();
+         o != edge->outputs_.end(); ++o) {
+      if (!disk_interface_->MakeDirs((*o)->path()))
+        return false;
+    }
   }
 
   // Create response file, if needed
@@ -558,24 +566,27 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
   METRIC_RECORD("FinishCommand");
 
   Edge* edge = result->edge;
+  bool phony_output = edge->IsPhonyOutput();
 
-  // First try to extract dependencies from the result, if any.
-  // This must happen first as it filters the command output (we want
-  // to filter /showIncludes output, even on compile failure) and
-  // extraction itself can fail, which makes the command fail from a
-  // build perspective.
   vector<Node*> deps_nodes;
   string deps_type = edge->GetBinding("deps");
-  const string deps_prefix = edge->GetBinding("msvc_deps_prefix");
-  if (!deps_type.empty()) {
-    string extract_err;
-    if (!ExtractDeps(result, deps_type, deps_prefix, &deps_nodes,
-                     &extract_err) &&
-        result->success()) {
-      if (!result->output.empty())
-        result->output.append("\n");
-      result->output.append(extract_err);
-      result->status = ExitFailure;
+  if (!phony_output) {
+    // First try to extract dependencies from the result, if any.
+    // This must happen first as it filters the command output (we want
+    // to filter /showIncludes output, even on compile failure) and
+    // extraction itself can fail, which makes the command fail from a
+    // build perspective.
+    const string deps_prefix = edge->GetBinding("msvc_deps_prefix");
+    if (!deps_type.empty()) {
+      string extract_err;
+      if (!ExtractDeps(result, deps_type, deps_prefix, &deps_nodes,
+                       &extract_err) &&
+          result->success()) {
+        if (!result->output.empty())
+          result->output.append("\n");
+        result->output.append(extract_err);
+        result->status = ExitFailure;
+      }
     }
   }
 
@@ -587,7 +598,7 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
 
   // Restat the edge outputs
   TimeStamp output_mtime = 0;
-  if (result->success() && !config_.dry_run) {
+  if (result->success() && !config_.dry_run && !phony_output) {
     bool restat = edge->IsRestat();
     vector<Node*> nodes_cleaned;
 
@@ -597,7 +608,7 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
       TimeStamp new_mtime = disk_interface_->LStat((*o)->path(), &is_dir, err);
       if (new_mtime == -1)
         return false;
-      if (is_dir) {
+      if (is_dir && config_.uses_phony_outputs) {
         if (!result->output.empty())
           result->output.append("\n");
         result->output.append("ninja: outputs should be files, not directories: ");
@@ -673,7 +684,7 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
   if (!rspfile.empty() && !g_keep_rsp)
     disk_interface_->RemoveFile(rspfile);
 
-  if (scan_.build_log()) {
+  if (scan_.build_log() && !phony_output) {
     if (!scan_.build_log()->RecordCommand(edge, start_time_millis,
                                           end_time_millis, output_mtime)) {
       *err = string("Error writing to build log: ") + strerror(errno);
@@ -681,7 +692,7 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
     }
   }
 
-  if (!deps_type.empty() && !config_.dry_run) {
+  if (!deps_type.empty() && !config_.dry_run && !phony_output) {
     Node* out = edge->outputs_[0];
     TimeStamp deps_mtime = disk_interface_->LStat(out->path(), nullptr, err);
     if (deps_mtime == -1)

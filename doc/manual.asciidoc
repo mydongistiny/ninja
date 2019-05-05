@@ -816,6 +816,31 @@ keys.
   the full command or its description; if a command fails, the full command
   line will always be printed before the command's output.
 
+`phony_output`:: _(Android-specific patch)_ if present, Ninja will not attempt
+  to look for them on disk. These rules are considered always dirty, and will
+  run every time they're depended upon. This behavior is very similar to Make's
+  `.PHONY` concept.
++
+This can be similar to the `phony` rule, but can have an attached `command`.
+`phony` rules are also only considered dirty in two cases: if their inputs are
+dirty, or if they have no inputs and a file with the same name does not exist on
+disk.
++
+Other build rules may not depend on `phony_output` rules unless they are also
+`phony_output`, so that it's not possible to accidentally cause everything to
+rebuild on every run.
++
+When `-w usesphonyoutputs=yes` is set on the ninja command line, it becomes an
+error for a `phony` rule to cause rebuilds, so that users can be found and
+migrated.
++
+Properly using `phony_output` and turning on `-w usesphonyoutputs=yes` allows
+the `-w outputdir={err,warn}` (consider output files that are directories as
+errors/warnings), `-w missingoutfile={err,warn}` (error/warn when an output file
+does not exist after a successful rule execution), and `-w oldoutput={err,warn}`
+(error/warn when an output file is not updated after a successful non-restat
+rule execution) flags to function.
+
 `generator`:: if present, specifies that this rule is used to
   re-invoke the generator program.  Files built using `generator`
   rules are treated specially in two ways: firstly, they will not be

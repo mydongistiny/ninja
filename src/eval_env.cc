@@ -39,6 +39,7 @@ bool Rule::IsReservedBinding(StringPiece var) {
       var == "restat" ||
       var == "rspfile" ||
       var == "rspfile_content" ||
+      var == "phony_output" ||
       var == "msvc_deps_prefix";
 }
 

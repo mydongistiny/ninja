@@ -377,6 +377,35 @@ TEST_F(CleanTest, CleanPhony) {
   EXPECT_LT(0, fs_.Stat("phony", &err));
 }
 
+TEST_F(CleanTest, CleanPhonyOutput) {
+  string err;
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule phony_out\n"
+"  command = echo ${out}\n"
+"  phony_output = true\n"
+"build phout: phony_out t1 t2\n"
+"build t1: cat\n"
+"build t2: cat\n"));
+
+  fs_.Create("phout", "");
+  fs_.Create("t1", "");
+  fs_.Create("t2", "");
+
+  // Check that CleanAll does not remove "phout".
+  Cleaner cleaner(&state_, config_, &fs_);
+  EXPECT_EQ(0, cleaner.CleanAll());
+  EXPECT_EQ(2, cleaner.cleaned_files_count());
+  EXPECT_LT(0, fs_.Stat("phout", &err));
+
+  fs_.Create("t1", "");
+  fs_.Create("t2", "");
+
+  // Check that CleanTarget does not remove "phony".
+  EXPECT_EQ(0, cleaner.CleanTarget("phout"));
+  EXPECT_EQ(2, cleaner.cleaned_files_count());
+  EXPECT_LT(0, fs_.Stat("phout", &err));
+}
+
 TEST_F(CleanTest, CleanDepFileAndRspFileWithSpaces) {
   ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
 "rule cc_dep\n"

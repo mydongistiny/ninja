@@ -18,7 +18,7 @@
 #include "test.h"
 
 struct GraphTest : public StateTestWithBuiltinRules {
-  GraphTest() : scan_(&state_, NULL, NULL, &fs_) {}
+  GraphTest() : scan_(&state_, NULL, NULL, &fs_, false) {}
 
   VirtualFileSystem fs_;
   DependencyScan scan_;
@@ -447,6 +447,74 @@ TEST_F(GraphTest, InputDirectoryChanged) {
   EXPECT_TRUE(GetNode("out")->dirty());
 }
 
+TEST_F(GraphTest, PhonyOutput) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule phony_out\n"
+"  command = echo ${out}\n"
+"  phony_output = true\n"
+"build foo: phony_out\n"));
+
+  Node* node = state_.LookupNode("foo");
+  Edge* edge = node->in_edge();
+  ASSERT_TRUE(edge->IsPhonyOutput());
+}
+
+TEST_F(GraphTest, PhonyOutputDependsOnPhonyOutput) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule phony_out\n"
+"  command = echo ${out}\n"
+"  phony_output = true\n"
+"build foo: phony_out\n"
+"build bar: phony_out foo\n"));
+
+  string err;
+  EXPECT_TRUE(scan_.RecomputeDirty(GetNode("bar"), &err));
+  ASSERT_EQ("", err);
+}
+
+TEST_F(GraphTest, RealDependsOnPhonyOutput) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule phony_out\n"
+"  command = echo ${out}\n"
+"  phony_output = true\n"
+"rule touch\n"
+"  command = touch ${out}\n"
+"build foo: phony_out\n"
+"build bar: touch foo\n"));
+
+  string err;
+  EXPECT_FALSE(scan_.RecomputeDirty(GetNode("bar"), &err));
+  EXPECT_EQ("real file 'bar' depends on phony output 'foo'\n", err);
+}
+
+TEST_F(GraphTest, PhonyDependsOnPhonyOutput) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule phony_out\n"
+"  command = echo ${out}\n"
+"  phony_output = true\n"
+"build foo: phony_out\n"
+"build bar: phony foo\n"));
+
+  string err;
+  EXPECT_FALSE(scan_.RecomputeDirty(GetNode("bar"), &err));
+  EXPECT_EQ("real file 'bar' depends on phony output 'foo'\n", err);
+}
+
+TEST_F(GraphTest, MissingPhonyWithPhonyOutputs) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"build foo: phony\n"));
+
+  string err;
+  EXPECT_TRUE(scan_.RecomputeDirty(GetNode("foo"), &err));
+  EXPECT_EQ("", err);
+  EXPECT_TRUE(GetNode("foo")->dirty());
+
+  state_.Reset();
+  DependencyScan scan(&state_, NULL, NULL, &fs_, true);
+  EXPECT_FALSE(scan.RecomputeDirty(GetNode("foo"), &err));
+  EXPECT_EQ("output foo of phony edge doesn't exist. Missing 'phony_output = true'?", err);
+}
+
 TEST_F(GraphTest, DependencyCycle) {
   AssertParse(&state_,
 "build out: cat mid\n"
@@ -622,4 +690,19 @@ TEST_F(GraphTest, EdgeVarEvalPhase) {
   EXPECT_EQ("echo C,edge:A", edge->GetBinding("command"));
   EXPECT_EQ("A", edge->pool()->name());
   EXPECT_EQ("C", edge->GetBinding("pool"));
+}
+
+TEST_F(GraphTest, PhonyOutputAlwaysDirty) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule phony_out\n"
+"  command = echo ${out}\n"
+"  phony_output = true\n"
+"build foo: phony_out\n"));
+
+  fs_.Create("foo", "");
+  string err;
+  EXPECT_TRUE(scan_.RecomputeDirty(GetNode("foo"), &err));
+  ASSERT_EQ("", err);
+
+  EXPECT_TRUE(GetNode("foo")->dirty());
 }

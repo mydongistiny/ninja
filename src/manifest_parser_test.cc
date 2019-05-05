@@ -62,6 +62,7 @@ TEST_F(ParserTest, RuleAttributes) {
 "  depfile = a\n"
 "  deps = a\n"
 "  description = a\n"
+"  phony_output = a\n"
 "  generator = a\n"
 "  restat = a\n"
 "  rspfile = a\n"

@@ -290,6 +290,7 @@ struct Edge {
     bool generator = false;
     bool deps = false;
     bool depfile = false;
+    bool phony_output = false;
     uint64_t command_hash = 0;
   };
 
@@ -316,6 +317,7 @@ struct Edge {
   uint64_t GetCommandHash()   { return ComputeDepScanInfo().command_hash; }
   bool IsRestat()             { return ComputeDepScanInfo().restat;       }
   bool IsGenerator()          { return ComputeDepScanInfo().generator;    }
+  bool IsPhonyOutput()         { return ComputeDepScanInfo().phony_output;  }
   bool UsesDepsLog()          { return ComputeDepScanInfo().deps;         }
   bool UsesDepfile()          { return ComputeDepScanInfo().depfile;      }
 
@@ -473,10 +475,11 @@ struct ImplicitDepLoader {
 /// and updating the dirty/outputs_ready state of all the nodes and edges.
 struct DependencyScan {
   DependencyScan(State* state, BuildLog* build_log, DepsLog* deps_log,
-                 DiskInterface* disk_interface)
+                 DiskInterface* disk_interface, bool missing_phony_is_err)
       : build_log_(build_log),
         disk_interface_(disk_interface),
-        dep_loader_(state, deps_log, disk_interface) {}
+        dep_loader_(state, deps_log, disk_interface),
+        missing_phony_is_err_(missing_phony_is_err) {}
 
   /// Used for tests.
   bool RecomputeDirty(Node* node, std::string* err) {
@@ -529,6 +532,8 @@ struct DependencyScan {
   BuildLog* build_log_;
   DiskInterface* disk_interface_;
   ImplicitDepLoader dep_loader_;
+
+  bool missing_phony_is_err_;
 };
 
 #endif  // NINJA_GRAPH_H_

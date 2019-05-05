@@ -116,7 +116,7 @@ int Cleaner::CleanAll(bool generator) {
   for (vector<Edge*>::iterator e = state_->edges_.begin();
        e != state_->edges_.end(); ++e) {
     // Do not try to remove phony targets
-    if ((*e)->is_phony())
+    if ((*e)->is_phony() || (*e)->IsPhonyOutput())
       continue;
     // Do not remove generator's files unless generator specified.
     if (!generator && (*e)->IsGenerator())
@@ -135,7 +135,7 @@ int Cleaner::CleanAll(bool generator) {
 void Cleaner::DoCleanTarget(Node* target) {
   if (Edge* e = target->in_edge()) {
     // Do not try to remove phony targets
-    if (!e->is_phony()) {
+    if (!e->is_phony() && !e->IsPhonyOutput()) {
       Remove(target->path());
       RemoveEdgeFiles(e);
     }
@@ -209,6 +209,9 @@ void Cleaner::DoCleanRule(const Rule* rule) {
   for (vector<Edge*>::iterator e = state_->edges_.begin();
        e != state_->edges_.end(); ++e) {
     if ((*e)->rule().name() == rule->name()) {
+      if ((*e)->IsPhonyOutput()) {
+        continue;
+      }
       for (vector<Node*>::iterator out_node = (*e)->outputs_.begin();
            out_node != (*e)->outputs_.end(); ++out_node) {
         Remove((*out_node)->path());

@@ -2353,7 +2353,7 @@ TEST_F(BuildTest, Console) {
   ASSERT_EQ(1u, command_runner_.commands_ran_.size());
 }
 
-TEST_F(BuildTest, OutputDirectoryWarning) {
+TEST_F(BuildTest, OutputDirectoryIgnored) {
   ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
 "rule mkdir\n"
 "  command = mkdir $out\n"
@@ -2365,7 +2365,29 @@ TEST_F(BuildTest, OutputDirectoryWarning) {
   EXPECT_TRUE(builder_.Build(&err));
   EXPECT_EQ("", err);
 
+  EXPECT_EQ("", status_.last_output_);
+}
+
+TEST_F(BuildTest, OutputDirectoryWarning) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule mkdir\n"
+"  command = mkdir $out\n"
+"build outdir: mkdir\n"));
+
+  config_.uses_phony_outputs = true;
+
+  Builder builder(&state_, config_, NULL, NULL, &fs_, &status_, 0);
+  builder.command_runner_.reset(&command_runner_);
+
+  string err;
+  EXPECT_TRUE(builder.AddTarget("outdir", &err));
+  EXPECT_EQ("", err);
+  EXPECT_TRUE(builder.Build(&err));
+  EXPECT_EQ("", err);
+
   EXPECT_EQ("ninja: outputs should be files, not directories: outdir", status_.last_output_);
+
+  builder.command_runner_.release();
 }
 
 TEST_F(BuildTest, OutputDirectoryError) {
@@ -2374,6 +2396,7 @@ TEST_F(BuildTest, OutputDirectoryError) {
 "  command = mkdir $out\n"
 "build outdir: mkdir\n"));
 
+  config_.uses_phony_outputs = true;
   config_.output_directory_should_err = true;
 
   Builder builder(&state_, config_, NULL, NULL, &fs_, &status_, 0);

@@ -29,6 +29,9 @@
 
 bool Node::PrecomputeStat(DiskInterface* disk_interface, std::string* err) {
   if (in_edge() != nullptr) {
+    if (in_edge()->IsPhonyOutput()) {
+      return true;
+    }
     return (precomputed_mtime_ = disk_interface->LStat(path_.str(), nullptr, err)) != -1;
   } else {
     return (precomputed_mtime_ = disk_interface->Stat(path_.str(), err)) != -1;
@@ -37,6 +40,7 @@ bool Node::PrecomputeStat(DiskInterface* disk_interface, std::string* err) {
 
 bool Node::Stat(DiskInterface* disk_interface, string* err) {
   if (in_edge() != nullptr) {
+    assert(!in_edge()->IsPhonyOutput());
     return (mtime_ = disk_interface->LStat(path_.str(), nullptr, err)) != -1;
   } else {
     return (mtime_ = disk_interface->Stat(path_.str(), err)) != -1;
@@ -190,22 +194,34 @@ bool DependencyScan::RecomputeNodeDirty(Node* node, std::vector<Node*>* stack,
   stack->push_back(node);
 
   bool dirty = false;
+  bool phony_output = edge->IsPhonyOutput();
   edge->outputs_ready_ = true;
   edge->deps_missing_ = false;
 
-  // Load output mtimes so we can compare them to the most recent input below.
-  for (vector<Node*>::iterator o = edge->outputs_.begin();
-       o != edge->outputs_.end(); ++o) {
-    if (!(*o)->StatIfNecessary(disk_interface_, err))
-      return false;
-  }
+  if (phony_output) {
+    EXPLAIN("edge with output %s is a phony output, so is always dirty",
+            node->path().c_str());
+    dirty = true;
 
-  if (!dep_loader_.LoadDeps(edge, err)) {
-    if (!err->empty())
+    if (edge->UsesDepsLog() || edge->UsesDepfile()) {
+      *err = "phony output " + node->path() + " has deps, which does not make sense.";
       return false;
-    // Failed to load dependency info: rebuild to regenerate it.
-    // LoadDeps() did EXPLAIN() already, no need to do it here.
-    dirty = edge->deps_missing_ = true;
+    }
+  } else {
+    // Load output mtimes so we can compare them to the most recent input below.
+    for (vector<Node*>::iterator o = edge->outputs_.begin();
+         o != edge->outputs_.end(); ++o) {
+      if (!(*o)->StatIfNecessary(disk_interface_, err))
+        return false;
+    }
+
+    if (!dep_loader_.LoadDeps(edge, err)) {
+      if (!err->empty())
+        return false;
+      // Failed to load dependency info: rebuild to regenerate it.
+      // LoadDeps() did EXPLAIN() already, no need to do it here.
+      dirty = edge->deps_missing_ = true;
+    }
   }
 
   // Visit all inputs; we're dirty if any of the inputs are dirty.
@@ -217,12 +233,19 @@ bool DependencyScan::RecomputeNodeDirty(Node* node, std::vector<Node*>* stack,
       return false;
 
     // If an input is not ready, neither are our outputs.
-    if (Edge* in_edge = (*i)->in_edge()) {
+    Edge* in_edge = (*i)->in_edge();
+    if (in_edge != nullptr) {
       if (!in_edge->outputs_ready_)
         edge->outputs_ready_ = false;
     }
 
-    if (!edge->is_order_only(i - edge->inputs_.begin())) {
+    if (!phony_output && !edge->is_order_only(i - edge->inputs_.begin())) {
+      if (in_edge != nullptr && in_edge->IsPhonyOutput()) {
+        *err = "real file '" + node->path() +
+               "' depends on phony output '" + (*i)->path() + "'\n";
+        return false;
+      }
+
       // If a regular input is dirty (or missing), we're dirty.
       // Otherwise consider mtime.
       if ((*i)->dirty()) {
@@ -307,10 +330,27 @@ bool DependencyScan::VerifyDAG(Node* node, vector<Node*>* stack, string* err) {
 
 bool DependencyScan::RecomputeOutputsDirty(Edge* edge, Node* most_recent_input,
                                            bool* outputs_dirty, string* err) {
+  assert(!edge->IsPhonyOutput());
 
   uint64_t command_hash = edge->GetCommandHash();
   for (vector<Node*>::iterator o = edge->outputs_.begin();
        o != edge->outputs_.end(); ++o) {
+    if (edge->is_phony()) {
+      // Phony edges don't write any output.  Outputs are only dirty if
+      // there are no inputs and we're missing the output.
+      if (edge->inputs_.empty() && !(*o)->exists()) {
+        if (missing_phony_is_err_) {
+          *err = "output " + (*o)->path() + " of phony edge doesn't exist. Missing 'phony_output = true'?";
+          return false;
+        } else {
+          EXPLAIN("output %s of phony edge with no inputs doesn't exist",
+                  (*o)->path().c_str());
+          *outputs_dirty = true;
+          return true;
+        }
+      }
+      continue;
+    }
     if (RecomputeOutputDirty(edge, most_recent_input, command_hash, *o)) {
       *outputs_dirty = true;
       return true;
@@ -323,16 +363,7 @@ bool DependencyScan::RecomputeOutputDirty(Edge* edge,
                                           Node* most_recent_input,
                                           uint64_t command_hash,
                                           Node* output) {
-  if (edge->is_phony()) {
-    // Phony edges don't write any output.  Outputs are only dirty if
-    // there are no inputs and we're missing the output.
-    if (edge->inputs_.empty() && !output->exists()) {
-      EXPLAIN("output %s of phony edge with no inputs doesn't exist",
-              output->path().c_str());
-      return true;
-    }
-    return false;
-  }
+  assert(!edge->is_phony());
 
   BuildLog::LogEntry* entry = 0;
 
@@ -515,6 +546,7 @@ std::string Edge::EvaluateCommand(bool incl_rsp_file) {
 static const HashedStrView kRestat      { "restat" };
 static const HashedStrView kGenerator   { "generator" };
 static const HashedStrView kDeps        { "deps" };
+static const HashedStrView kPhonyOutput  { "phony_output" };
 
 bool Edge::PrecomputeDepScanInfo(std::string* err) {
   if (dep_scan_info_.valid)
@@ -529,10 +561,11 @@ bool Edge::PrecomputeDepScanInfo(std::string* err) {
     *out = !value.empty();
     return true;
   };
-  if (!get_bool_var(kRestat,    EdgeEval::kShellEscape, &dep_scan_info_.restat))    return false;
-  if (!get_bool_var(kGenerator, EdgeEval::kShellEscape, &dep_scan_info_.generator)) return false;
-  if (!get_bool_var(kDeps,      EdgeEval::kShellEscape, &dep_scan_info_.deps))      return false;
-  if (!get_bool_var(kDepfile,   EdgeEval::kDoNotEscape, &dep_scan_info_.depfile))   return false;
+  if (!get_bool_var(kRestat,      EdgeEval::kShellEscape, &dep_scan_info_.restat))       return false;
+  if (!get_bool_var(kGenerator,   EdgeEval::kShellEscape, &dep_scan_info_.generator))    return false;
+  if (!get_bool_var(kDeps,        EdgeEval::kShellEscape, &dep_scan_info_.deps))         return false;
+  if (!get_bool_var(kDepfile,     EdgeEval::kDoNotEscape, &dep_scan_info_.depfile))      return false;
+  if (!get_bool_var(kPhonyOutput, EdgeEval::kShellEscape, &dep_scan_info_.phony_output)) return false;
 
   // Precompute the command hash.
   std::string command;

@@ -989,6 +989,9 @@ bool WarningEnable(const string& name, Options* options, BuildConfig* config) {
 "  dupbuild={err,warn}  multiple build lines for one target\n"
 "  phonycycle={err,warn}  phony build statement references itself\n"
 "  missingdepfile={err,warn}  how to treat missing depfiles\n"
+"\n"
+"  usesphonyoutputs={yes,no}  whether the generate uses 'phony_output's so \n"
+"                             that the following warnings work\n"
 "  outputdir={err,warn}  how to treat outputs that are directories\n");
     return false;
   } else if (name == "dupbuild=err") {
@@ -1009,6 +1012,12 @@ bool WarningEnable(const string& name, Options* options, BuildConfig* config) {
   } else if (name == "missingdepfile=warn") {
     config->missing_depfile_should_err = false;
     return true;
+  } else if (name == "usesphonyoutputs=yes") {
+    config->uses_phony_outputs = true;
+    return true;
+  } else if (name == "usesphonyoutputs=no") {
+    config->uses_phony_outputs = false;
+    return true;
   } else if (name == "outputdir=err") {
     config->output_directory_should_err = true;
     return true;
@@ -1020,6 +1029,7 @@ bool WarningEnable(const string& name, Options* options, BuildConfig* config) {
         SpellcheckString(name.c_str(), "dupbuild=err", "dupbuild=warn",
                          "phonycycle=err", "phonycycle=warn",
                          "missingdepfile=err", "missingdepfile=warn",
+                         "usesphonyoutputs=yes", "usesphonyoutputs=no",
                          "outputdir=err", "outputdir=warn", NULL);
     if (suggestion) {
       Error("unknown warning flag '%s', did you mean '%s'?",
