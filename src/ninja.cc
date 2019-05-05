@@ -992,7 +992,8 @@ bool WarningEnable(const string& name, Options* options, BuildConfig* config) {
 "\n"
 "  usesphonyoutputs={yes,no}  whether the generate uses 'phony_output's so \n"
 "                             that the following warnings work\n"
-"  outputdir={err,warn}  how to treat outputs that are directories\n");
+"  outputdir={err,warn}  how to treat outputs that are directories\n"
+"  missingoutfile={err,warn}  how to treat missing output files\n");
     return false;
   } else if (name == "dupbuild=err") {
     options->dupe_edges_should_err = true;
@@ -1024,13 +1025,20 @@ bool WarningEnable(const string& name, Options* options, BuildConfig* config) {
   } else if (name == "outputdir=warn") {
     config->output_directory_should_err = false;
     return true;
+  } else if (name == "missingoutfile=err") {
+    config->missing_output_file_should_err = true;
+    return true;
+  } else if (name == "missingoutfile=warn") {
+    config->missing_output_file_should_err = false;
+    return true;
   } else {
     const char* suggestion =
         SpellcheckString(name.c_str(), "dupbuild=err", "dupbuild=warn",
                          "phonycycle=err", "phonycycle=warn",
                          "missingdepfile=err", "missingdepfile=warn",
                          "usesphonyoutputs=yes", "usesphonyoutputs=no",
-                         "outputdir=err", "outputdir=warn", NULL);
+                         "outputdir=err", "outputdir=warn",
+                         "missingoutfile=err", "missingoutfile=warn", NULL);
     if (suggestion) {
       Error("unknown warning flag '%s', did you mean '%s'?",
             name.c_str(), suggestion);

@@ -145,7 +145,8 @@ struct BuildConfig {
                   frontend(NULL), frontend_file(NULL),
                   missing_depfile_should_err(false),
                   uses_phony_outputs(false),
-                  output_directory_should_err(false) {}
+                  output_directory_should_err(false),
+                  missing_output_file_should_err(false) {}
 
   enum Verbosity {
     NORMAL,
@@ -175,6 +176,9 @@ struct BuildConfig {
 
   /// Whether an output can be a directory
   bool output_directory_should_err;
+
+  /// Whether a missing output file should warn or print an error.
+  bool missing_output_file_should_err;
 };
 
 /// Builder wraps the build process: starting commands, updating status.

@@ -610,7 +610,8 @@ bool FakeCommandRunner::StartCommand(Edge* edge) {
              edge->rule().name() == "fail" ||
              edge->rule().name() == "interrupt" ||
              edge->rule().name() == "console" ||
-             edge->rule().name() == "mkdir") {
+             edge->rule().name() == "mkdir" ||
+             edge->rule().name() == "phony_out") {
     // Don't do anything.
   } else {
     printf("unknown command\n");
@@ -2409,6 +2410,85 @@ TEST_F(BuildTest, OutputDirectoryError) {
   EXPECT_EQ("subcommand failed", err);
 
   EXPECT_EQ("ninja: outputs should be files, not directories: outdir", status_.last_output_);
+
+  builder.command_runner_.release();
+}
+
+TEST_F(BuildTest, OutputFileMissingIgnore) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule true\n  command = true\n"
+"build outfile: true\n"));
+
+  string err;
+  EXPECT_TRUE(builder_.AddTarget("outfile", &err));
+  EXPECT_EQ("", err);
+  EXPECT_TRUE(builder_.Build(&err));
+  EXPECT_EQ("", err);
+
+  EXPECT_EQ("", status_.last_output_);
+}
+
+TEST_F(BuildTest, OutputFileMissingWarning) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule true\n  command = true\n"
+"build outfile: true\n"));
+
+  config_.uses_phony_outputs = true;
+
+  Builder builder(&state_, config_, NULL, NULL, &fs_, &status_, 0);
+  builder.command_runner_.reset(&command_runner_);
+
+  string err;
+  EXPECT_TRUE(builder.AddTarget("outfile", &err));
+  EXPECT_EQ("", err);
+  EXPECT_TRUE(builder.Build(&err));
+  EXPECT_EQ("", err);
+
+  EXPECT_EQ("ninja: output file missing after successful execution: outfile", status_.last_output_);
+
+  builder.command_runner_.release();
+}
+
+TEST_F(BuildTest, OutputFileMissingError) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule true\n  command = true\n"
+"build outfile: true\n"));
+
+  config_.uses_phony_outputs = true;
+  config_.missing_output_file_should_err = true;
+
+  Builder builder(&state_, config_, NULL, NULL, &fs_, &status_, 0);
+  builder.command_runner_.reset(&command_runner_);
+
+  string err;
+  EXPECT_TRUE(builder.AddTarget("outfile", &err));
+  EXPECT_EQ("", err);
+  EXPECT_FALSE(builder.Build(&err));
+  EXPECT_EQ("subcommand failed", err);
+
+  EXPECT_EQ("ninja: output file missing after successful execution: outfile", status_.last_output_);
+
+  builder.command_runner_.release();
+}
+
+TEST_F(BuildTest, OutputFileNotNeeded) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule phony_out\n"
+"  command = echo ${out}\n"
+"  phony_output = true\n"
+"build outphony: phony_out\n"));
+
+  config_.uses_phony_outputs = true;
+  config_.missing_output_file_should_err = true;
+
+  Builder builder(&state_, config_, NULL, NULL, &fs_, &status_, 0);
+  builder.command_runner_.reset(&command_runner_);
+
+  string err;
+  EXPECT_TRUE(builder.AddTarget("outphony", &err));
+  EXPECT_EQ("", err);
+  EXPECT_TRUE(builder.Build(&err));
+  EXPECT_EQ("", err);
 
   builder.command_runner_.release();
 }

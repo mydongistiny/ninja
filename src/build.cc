@@ -608,13 +608,24 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
       TimeStamp new_mtime = disk_interface_->LStat((*o)->path(), &is_dir, err);
       if (new_mtime == -1)
         return false;
-      if (is_dir && config_.uses_phony_outputs) {
-        if (!result->output.empty())
-          result->output.append("\n");
-        result->output.append("ninja: outputs should be files, not directories: ");
-        result->output.append((*o)->path());
-        if (config_.output_directory_should_err) {
-          result->status = ExitFailure;
+      if (config_.uses_phony_outputs) {
+        if (new_mtime == 0) {
+          if (!result->output.empty())
+            result->output.append("\n");
+          result->output.append("ninja: output file missing after successful execution: ");
+          result->output.append((*o)->path());
+          if (config_.missing_output_file_should_err) {
+            result->status = ExitFailure;
+          }
+        }
+        if (is_dir) {
+          if (!result->output.empty())
+            result->output.append("\n");
+          result->output.append("ninja: outputs should be files, not directories: ");
+          result->output.append((*o)->path());
+          if (config_.output_directory_should_err) {
+            result->status = ExitFailure;
+          }
         }
       }
       if (new_mtime > output_mtime)
