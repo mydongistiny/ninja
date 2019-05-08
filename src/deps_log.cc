@@ -387,11 +387,16 @@ bool DepsLog::Load(const string& path, State* state, string* err) {
     initial_node_count += chunk.initial_node_count;
   }
 
-  // A map from node ID to the final file table index of the dep record
-  // outputting the given node ID. The index is biased by 1 because 0 indicates
-  // that no dep record outputs this ID.
-  std::vector<std::atomic<size_t>> dep_index(initial_node_count);
-  // A map from node ID to file index of that node, with no bias.
+  // A map from a node ID to the final file index of the deps record outputting
+  // the given node ID.
+  std::vector<std::atomic<ssize_t>> dep_index(initial_node_count);
+  for (auto& index : dep_index) {
+    // Write a value of -1 to indicate that no deps record outputs this ID. We
+    // don't need these stores to be synchronized with other threads, so use
+    // relaxed stores, which are much faster.
+    index.store(-1, std::memory_order_relaxed);
+  }
+  // A map from a node ID to the file index of that node.
   std::vector<size_t> node_index(initial_node_count);
 
   // The main parsing pass. Validate each chunk's entries and, for each node ID,
@@ -413,7 +418,7 @@ bool DepsLog::Load(const string& path, State* state, string* err) {
           int input_id = log.table[index + i];
           if (input_id < 0 || input_id >= next_node_id) break;
         }
-        AtomicUpdateMaximum(&dep_index[output_id], index + 1);
+        AtomicUpdateMaximum(&dep_index[output_id], static_cast<ssize_t>(index));
         ++chunk.deps_count;
       } else {
         // Validate the path's checksum.
@@ -482,9 +487,8 @@ bool DepsLog::Load(const string& path, State* state, string* err) {
       [this, &log, &dep_index](std::pair<int, int> node_chunk) {
     size_t unique_count = 0;
     for (int node_id = node_chunk.first; node_id < node_chunk.second; ++node_id) {
-      size_t index = dep_index[node_id];
-      if (index == 0) continue;
-      --index;
+      ssize_t index = dep_index[node_id];
+      if (index == -1) continue;
       ++unique_count;
       size_t header = log.table[index];
       size_t size = RecordSizeInWords(header);
