@@ -602,12 +602,23 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
     bool restat = edge->IsRestat();
     vector<Node*> nodes_cleaned;
 
+    TimeStamp newest_input = 0;
+    for (vector<Node*>::iterator i = edge->inputs_.begin();
+         i != edge->inputs_.end() - edge->order_only_deps_; ++i) {
+      TimeStamp input_mtime = (*i)->mtime();
+      if (input_mtime == -1)
+        return false;
+      if (input_mtime > newest_input)
+        newest_input = input_mtime;
+    }
+
     for (vector<Node*>::iterator o = edge->outputs_.begin();
          o != edge->outputs_.end(); ++o) {
       bool is_dir = false;
-      TimeStamp new_mtime = disk_interface_->LStat((*o)->path(), &is_dir, err);
-      if (new_mtime == -1)
+      TimeStamp old_mtime = (*o)->mtime();
+      if (!(*o)->LStat(disk_interface_, &is_dir, err))
         return false;
+      TimeStamp new_mtime = (*o)->mtime();
       if (config_.uses_phony_outputs) {
         if (new_mtime == 0) {
           if (!result->output.empty())
@@ -615,6 +626,14 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
           result->output.append("ninja: output file missing after successful execution: ");
           result->output.append((*o)->path());
           if (config_.missing_output_file_should_err) {
+            result->status = ExitFailure;
+          }
+        } else if (!restat && new_mtime < newest_input) {
+          if (!result->output.empty())
+            result->output.append("\n");
+          result->output.append("ninja: Missing `restat`? An output file is older than the most recent input: ");
+          result->output.append((*o)->path());
+          if (config_.old_output_should_err) {
             result->status = ExitFailure;
           }
         }
@@ -630,8 +649,9 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
       }
       if (new_mtime > output_mtime)
         output_mtime = new_mtime;
-      if ((*o)->mtime() == new_mtime && restat) {
+      if (old_mtime == new_mtime && restat) {
         nodes_cleaned.push_back(*o);
+        continue;
       }
     }
 
@@ -647,22 +667,9 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
           return false;
       }
 
-      TimeStamp restat_mtime = 0;
       // If any output was cleaned, find the most recent mtime of any
       // (existing) non-order-only input or the depfile.
-      for (vector<Node*>::iterator i = edge->inputs_.begin();
-           i != edge->inputs_.end() - edge->order_only_deps_; ++i) {
-        TimeStamp input_mtime;
-        if ((*i)->in_edge() != nullptr) {
-          input_mtime = disk_interface_->LStat((*i)->path(), nullptr, err);
-        } else {
-          input_mtime = disk_interface_->Stat((*i)->path(), err);
-        }
-        if (input_mtime == -1)
-          return false;
-        if (input_mtime > restat_mtime)
-          restat_mtime = input_mtime;
-      }
+      TimeStamp restat_mtime = newest_input;
 
       string depfile = edge->GetUnescapedDepfile();
       if (restat_mtime != 0 && deps_type.empty() && !depfile.empty()) {

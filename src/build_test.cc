@@ -2493,6 +2493,140 @@ TEST_F(BuildTest, OutputFileNotNeeded) {
   builder.command_runner_.release();
 }
 
+TEST_F(BuildWithLogTest, OldOutputFileIgnored) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule true\n  command = true\n"
+"build out: true in\n"));
+
+  fs_.Create("in", "");
+  fs_.Tick();
+  fs_.Create("out", "");
+
+  string err;
+  EXPECT_TRUE(builder_.AddTarget("out", &err));
+  EXPECT_EQ("", err);
+  EXPECT_TRUE(builder_.Build(&err));
+  EXPECT_EQ("", err);
+
+  fs_.Tick();
+  fs_.Create("in", "");
+
+  state_.Reset();
+  EXPECT_TRUE(builder_.AddTarget("out", &err));
+  EXPECT_EQ("", err);
+  EXPECT_TRUE(builder_.Build(&err));
+  EXPECT_EQ("", err);
+
+  EXPECT_EQ("", status_.last_output_);
+}
+
+TEST_F(BuildWithLogTest, OldOutputFileWarning) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule true\n  command = true\n"
+"build out: true in\n"));
+
+  config_.uses_phony_outputs = true;
+
+  Builder builder(&state_, config_, &build_log_, NULL, &fs_, &status_, 0);
+  builder.command_runner_.reset(&command_runner_);
+
+  fs_.Create("in", "");
+  fs_.Tick();
+  fs_.Create("out", "");
+
+  string err;
+  EXPECT_TRUE(builder.AddTarget("out", &err));
+  EXPECT_EQ("", err);
+  EXPECT_TRUE(builder.Build(&err));
+  EXPECT_EQ("", err);
+
+  fs_.Tick();
+  fs_.Create("in", "");
+
+  command_runner_.commands_ran_.clear();
+  state_.Reset();
+  EXPECT_TRUE(builder.AddTarget("out", &err));
+  EXPECT_EQ("", err);
+  EXPECT_TRUE(builder.Build(&err));
+  EXPECT_EQ("", err);
+
+  EXPECT_EQ("ninja: Missing `restat`? An output file is older than the most recent input: out", status_.last_output_);
+
+  builder.command_runner_.release();
+}
+
+TEST_F(BuildWithLogTest, OldOutputFileError) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule true\n  command = true\n"
+"build out: true in\n"));
+
+  config_.uses_phony_outputs = true;
+  config_.old_output_should_err = true;
+
+  Builder builder(&state_, config_, &build_log_, NULL, &fs_, &status_, 0);
+  builder.command_runner_.reset(&command_runner_);
+
+  fs_.Create("in", "");
+  fs_.Tick();
+  fs_.Create("out", "");
+
+  string err;
+  EXPECT_TRUE(builder.AddTarget("out", &err));
+  EXPECT_EQ("", err);
+  EXPECT_TRUE(builder.Build(&err));
+  EXPECT_EQ("", err);
+
+  fs_.Tick();
+  fs_.Create("in", "");
+
+  command_runner_.commands_ran_.clear();
+  state_.Reset();
+  EXPECT_TRUE(builder.AddTarget("out", &err));
+  EXPECT_EQ("", err);
+  EXPECT_FALSE(builder.Build(&err));
+  EXPECT_EQ("subcommand failed", err);
+
+  EXPECT_EQ("ninja: Missing `restat`? An output file is older than the most recent input: out", status_.last_output_);
+
+  builder.command_runner_.release();
+}
+
+TEST_F(BuildWithLogTest, OutputFileUpdated) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule touch\n  command = touch ${out}\n"
+"build out: touch in\n"));
+
+  config_.uses_phony_outputs = true;
+  config_.old_output_should_err = true;
+
+  Builder builder(&state_, config_, &build_log_, NULL, &fs_, &status_, 0);
+  builder.command_runner_.reset(&command_runner_);
+
+  fs_.Create("in", "");
+  fs_.Tick();
+  fs_.Create("out", "");
+
+  string err;
+  EXPECT_TRUE(builder.AddTarget("out", &err));
+  EXPECT_EQ("", err);
+  EXPECT_TRUE(builder.Build(&err));
+  EXPECT_EQ("", err);
+
+  fs_.Tick();
+  fs_.Create("in", "");
+
+  command_runner_.commands_ran_.clear();
+  state_.Reset();
+  EXPECT_TRUE(builder.AddTarget("out", &err));
+  EXPECT_EQ("", err);
+  EXPECT_TRUE(builder.Build(&err));
+  EXPECT_EQ("", err);
+
+  EXPECT_EQ("", status_.last_output_);
+
+  builder.command_runner_.release();
+}
+
 TEST_F(BuildWithDepsLogTest, MissingDepfileWarning) {
   ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
 "build out1: cat in1\n"

@@ -146,7 +146,8 @@ struct BuildConfig {
                   missing_depfile_should_err(false),
                   uses_phony_outputs(false),
                   output_directory_should_err(false),
-                  missing_output_file_should_err(false) {}
+                  missing_output_file_should_err(false),
+                  old_output_should_err(false) {}
 
   enum Verbosity {
     NORMAL,
@@ -179,6 +180,10 @@ struct BuildConfig {
 
   /// Whether a missing output file should warn or print an error.
   bool missing_output_file_should_err;
+
+  /// Whether an output with an older timestamp than the inputs should
+  /// warn or print an error.
+  bool old_output_should_err;
 };
 
 /// Builder wraps the build process: starting commands, updating status.

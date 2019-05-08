@@ -47,6 +47,12 @@ bool Node::Stat(DiskInterface* disk_interface, string* err) {
   }
 }
 
+bool Node::LStat(DiskInterface* disk_interface, bool* is_dir, string* err) {
+  assert(in_edge() != nullptr);
+  assert(!in_edge()->IsPhonyOutput());
+  return (mtime_ = disk_interface->LStat(path_.str(), is_dir, err)) != -1;
+}
+
 bool DependencyScan::RecomputeNodesDirty(const std::vector<Node*>& initial_nodes,
                                          std::string* err) {
   METRIC_RECORD("dep scan");

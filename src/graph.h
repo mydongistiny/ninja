@@ -111,7 +111,11 @@ struct Node {
   }
 
   /// Return false on error.
+  /// Uses stat() or lstat() as appropriate.
   bool Stat(DiskInterface* disk_interface, string* err);
+
+  /// Only use when lstat() is desired (output files)
+  bool LStat(DiskInterface* disk_interface, bool* is_dir, string* err);
 
   /// Return false on error.
   bool StatIfNecessary(DiskInterface* disk_interface, string* err) {
