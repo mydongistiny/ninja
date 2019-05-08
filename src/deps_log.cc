@@ -277,14 +277,13 @@ SplitDepsLog(const uint32_t* table, size_t size, ThreadPool* thread_pool) {
   return chunks;
 }
 
-struct DepsLogInput {
+struct DepsLogInputFile {
   std::unique_ptr<LoadedFile> file;
-  const uint32_t* table = nullptr;
-  size_t table_size = 0;
+  DepsLogData data;
 };
 
 static bool OpenDepsLogForReading(const std::string& path,
-                                  DepsLogInput* log,
+                                  DepsLogInputFile* log,
                                   std::string* err) {
   *log = {};
 
@@ -326,10 +325,10 @@ static bool OpenDepsLogForReading(const std::string& path,
     return true;
   }
 
-  log->table =
+  log->data.words =
       reinterpret_cast<const uint32_t*>(
           log->file->content().data() + kFileHeaderSize);
-  log->table_size =
+  log->data.size =
       (log->file->content().size() - kFileHeaderSize) / sizeof(uint32_t);
 
   return true;
@@ -339,10 +338,12 @@ bool DepsLog::Load(const string& path, State* state, string* err) {
   METRIC_RECORD(".ninja_deps load");
 
   assert(nodes_.empty());
-  DepsLogInput log;
+  DepsLogInputFile log_file;
 
-  if (!OpenDepsLogForReading(path, &log, err)) return false;
-  if (log.file.get() == nullptr) return true;
+  if (!OpenDepsLogForReading(path, &log_file, err)) return false;
+  if (log_file.file.get() == nullptr) return true;
+
+  DepsLogData log = log_file.data;
 
   struct NINJA_ALIGNAS_CACHE_LINE Chunk {
     size_t start = 0;
@@ -358,7 +359,7 @@ bool DepsLog::Load(const string& path, State* state, string* err) {
 
   std::vector<Chunk> chunks;
   for (std::pair<size_t, size_t> span :
-      SplitDepsLog(log.table, log.table_size, thread_pool.get())) {
+      SplitDepsLog(log.words, log.size, thread_pool.get())) {
     Chunk chunk {};
     chunk.start = span.first;
     chunk.stop = span.second;
@@ -368,10 +369,10 @@ bool DepsLog::Load(const string& path, State* state, string* err) {
   // Compute the starting node ID for each chunk. The result is correct as long as
   // preceding chunks are parsed successfully. If there is a parsing error in a
   // chunk, then following chunks are discarded after the validation pass.
-  ParallelMap(thread_pool.get(), chunks, [&log](Chunk& chunk) {
+  ParallelMap(thread_pool.get(), chunks, [log](Chunk& chunk) {
     size_t index = chunk.start;
     while (index < chunk.stop) {
-      size_t header = log.table[index];
+      size_t header = log.words[index];
       size_t size = RecordSizeInWords(header);
       if (!size) return; // invalid header
       if (!IsDepsRecordHeader(header)) {
@@ -403,26 +404,26 @@ bool DepsLog::Load(const string& path, State* state, string* err) {
   // record the location of its node and deps records. If there is parser error,
   // truncate the log just before the problem record.
   ParallelMap(thread_pool.get(), chunks,
-      [&log, &dep_index, &node_index](Chunk& chunk) {
+      [log, &dep_index, &node_index](Chunk& chunk) {
     size_t index = chunk.start;
     int next_node_id = chunk.first_node_id;
     while (index < chunk.stop) {
-      size_t header = log.table[index];
+      size_t header = log.words[index];
       size_t size = RecordSizeInWords(header);
       if (!size || (index + size > chunk.stop)) break;
       if (IsDepsRecordHeader(header)) {
         // Verify that input/output node IDs are valid.
-        int output_id = log.table[index + 1];
+        int output_id = log.words[index + 1];
         if (output_id < 0 || output_id >= next_node_id) break;
         for (size_t i = 4; i < size; ++i) {
-          int input_id = log.table[index + i];
+          int input_id = log.words[index + i];
           if (input_id < 0 || input_id >= next_node_id) break;
         }
         AtomicUpdateMaximum(&dep_index[output_id], static_cast<ssize_t>(index));
         ++chunk.deps_count;
       } else {
         // Validate the path's checksum.
-        int checksum = log.table[index + size - 1];
+        int checksum = log.words[index + size - 1];
         if (checksum != ~next_node_id) break;
         node_index[next_node_id] = index;
         ++next_node_id;
@@ -460,11 +461,11 @@ bool DepsLog::Load(const string& path, State* state, string* err) {
   state->paths_.reserve(node_count);
   nodes_.resize(node_count);
   ParallelMap(thread_pool.get(), IntegralRange<int>(0, node_count),
-      [this, state, &log, &node_index](int node_id) {
+      [this, state, log, &node_index](int node_id) {
     size_t index = node_index[node_id];
-    size_t header = log.table[index];
+    size_t header = log.words[index];
     size_t size = RecordSizeInWords(header);
-    const char* path = reinterpret_cast<const char*>(&log.table[index + 1]);
+    const char* path = reinterpret_cast<const char*>(&log.words[index + 1]);
     size_t path_size = (size - 2) * sizeof(uint32_t);
     if (path[path_size - 1] == '\0') --path_size;
     if (path[path_size - 1] == '\0') --path_size;
@@ -484,23 +485,23 @@ bool DepsLog::Load(const string& path, State* state, string* err) {
   deps_.resize(node_count);
   std::vector<size_t> unique_counts = ParallelMap(thread_pool.get(),
       SplitByThreads(node_count),
-      [this, &log, &dep_index](std::pair<int, int> node_chunk) {
+      [this, log, &dep_index](std::pair<int, int> node_chunk) {
     size_t unique_count = 0;
     for (int node_id = node_chunk.first; node_id < node_chunk.second; ++node_id) {
       ssize_t index = dep_index[node_id];
       if (index == -1) continue;
       ++unique_count;
-      size_t header = log.table[index];
+      size_t header = log.words[index];
       size_t size = RecordSizeInWords(header);
       assert(size != 0 && IsDepsRecordHeader(header));
-      int output_id = log.table[index + 1];
+      int output_id = log.words[index + 1];
       TimeStamp mtime;
-      mtime = (TimeStamp)(((uint64_t)(unsigned int)log.table[index+3] << 32) |
-                          (uint64_t)(unsigned int)log.table[index+2]);
+      mtime = (TimeStamp)(((uint64_t)(unsigned int)log.words[index+3] << 32) |
+                          (uint64_t)(unsigned int)log.words[index+2]);
       int deps_count = size - 4;
       Deps* deps = new Deps(mtime, deps_count);
       for (int i = 0; i < deps_count; ++i) {
-        int input_id = log.table[index + 4 + i];
+        int input_id = log.words[index + 4 + i];
         Node* node = nodes_[input_id];
         assert(node != nullptr);
         deps->nodes[i] = node;
@@ -512,7 +513,7 @@ bool DepsLog::Load(const string& path, State* state, string* err) {
   size_t unique_dep_record_count = std::accumulate(unique_counts.begin(),
                                                    unique_counts.end(), 0);
 
-  const size_t actual_file_size = log.file->content().size();
+  const size_t actual_file_size = log_file.file->content().size();
   const size_t parsed_file_size = kFileHeaderSize +
       (chunks.empty() ? 0 : chunks.back().stop) * sizeof(uint32_t);
   assert(parsed_file_size <= actual_file_size);
@@ -520,7 +521,7 @@ bool DepsLog::Load(const string& path, State* state, string* err) {
     // An error occurred while loading; try to recover by truncating the file to
     // the last fully-read record.
     *err = "premature end of file";
-    log.file.reset();
+    log_file.file.reset();
 
     if (!Truncate(path, parsed_file_size, err))
       return false;

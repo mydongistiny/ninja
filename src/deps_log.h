@@ -27,6 +27,13 @@ struct DiskInterface;
 struct Node;
 struct State;
 
+/// A buffer of uint32 words used to load a deps log. Does not include the
+/// log file's header.
+struct DepsLogData {
+  const uint32_t* words = nullptr;
+  size_t size = 0;
+};
+
 /// As build commands run they can output extra dependency information
 /// (e.g. header dependencies for C source) dynamically.  DepsLog collects
 /// that information at build time and uses it for subsequent builds.
