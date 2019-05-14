@@ -174,21 +174,6 @@ void DepsLog::Close() {
   file_ = NULL;
 }
 
-// Return the number of words in the record, including the header, or 0 if
-// the header is invalid.
-static inline size_t RecordSizeInWords(size_t header) {
-  header &= 0x7FFFFFFF;
-  if (header % sizeof(uint32_t) != 0) return 0;
-  // Either (node ID and mtime) or (data and checksum)
-  if (header < sizeof(uint32_t) * 2) return 0;
-  if (header > kMaxRecordSize) return 0;
-  return header / sizeof(uint32_t) + 1;
-}
-
-static inline bool IsDepsRecordHeader(size_t header) {
-  return (header & 0x80000000) == 0x80000000;
-}
-
 struct DepsLogWordSpan {
   size_t begin; // starting index into a deps log buffer of uint32 words
   size_t end; // stopping index
@@ -296,6 +281,75 @@ SplitDepsLog(DepsLogData log, ThreadPool* thread_pool) {
   return chunks;
 }
 
+struct InputRecord {
+  enum Kind { InvalidHeader, PathRecord, DepsRecord } kind = InvalidHeader;
+  size_t size = 0; // number of 32-bit words, including the header
+
+  union {
+    struct {
+      StringPiece path;
+      int checksum;
+    } path;
+
+    struct {
+      int output_id;
+      TimeStamp mtime;
+      const uint32_t* deps;
+      size_t deps_count;
+    } deps;
+  } u = {};
+};
+
+/// Parse a deps log record at the given index within the loaded deps log.
+/// If there is anything wrong with the header (e.g. the record extends past the
+/// end of the file), this function returns a blank InvalidHeader record.
+static InputRecord ParseRecord(DepsLogData log, size_t index) {
+  InputRecord result {};
+  assert(index < log.size);
+
+  // The header of a record is the size of the record, in bytes, without
+  // including the header itself. The high bit is set for a deps record and
+  // clear for a path record.
+  const uint32_t header = log.words[index];
+  const uint32_t raw_size = header & 0x7fffffff;
+  if (raw_size % sizeof(uint32_t) != 0) return result;
+  if (raw_size > kMaxRecordSize) return result;
+
+  // Add the header to the size for easier iteration over records later on.
+  const size_t size = raw_size / sizeof(uint32_t) + 1;
+  if (log.size - index < size) return result;
+
+  if ((header & 0x80000000) == 0) {
+    // Path record (header, content, checksum).
+    if (size < 3) return result;
+
+    const char* path = reinterpret_cast<const char*>(&log.words[index + 1]);
+    size_t path_size = (size - 2) * sizeof(uint32_t);
+    if (path[path_size - 1] == '\0') --path_size;
+    if (path[path_size - 1] == '\0') --path_size;
+    if (path[path_size - 1] == '\0') --path_size;
+
+    result.kind = InputRecord::PathRecord;
+    result.size = size;
+    result.u.path.path = StringPiece(path, path_size);
+    result.u.path.checksum = log.words[index + size - 1];
+    return result;
+  } else {
+    // Deps record (header, output_id, mtime_lo, mtime_hi).
+    if (size < 4) return result;
+
+    result.kind = InputRecord::DepsRecord;
+    result.size = size;
+    result.u.deps.output_id = log.words[index + 1];
+    result.u.deps.mtime =
+      (TimeStamp)(((uint64_t)(unsigned int)log.words[index + 3] << 32) |
+                  (uint64_t)(unsigned int)log.words[index + 2]);
+    result.u.deps.deps = &log.words[index + 4];
+    result.u.deps.deps_count = size - 4;
+    return result;
+  }
+}
+
 struct DepsLogInputFile {
   std::unique_ptr<LoadedFile> file;
   DepsLogData data;
@@ -390,13 +444,12 @@ bool DepsLog::Load(const string& path, State* state, string* err) {
   ParallelMap(thread_pool.get(), chunks, [log](Chunk& chunk) {
     size_t index = chunk.start;
     while (index < chunk.stop) {
-      size_t header = log.words[index];
-      size_t size = RecordSizeInWords(header);
-      if (!size) return; // invalid header
-      if (!IsDepsRecordHeader(header)) {
+      InputRecord record = ParseRecord(log, index);
+      if (record.kind == InputRecord::InvalidHeader) return;
+      if (record.kind == InputRecord::PathRecord) {
         ++chunk.initial_node_count;
       }
-      index += size;
+      index += record.size;
     }
   });
   int initial_node_count = 0;
@@ -426,28 +479,26 @@ bool DepsLog::Load(const string& path, State* state, string* err) {
     size_t index = chunk.start;
     int next_node_id = chunk.first_node_id;
     while (index < chunk.stop) {
-      size_t header = log.words[index];
-      size_t size = RecordSizeInWords(header);
-      if (!size || (index + size > chunk.stop)) break;
-      if (IsDepsRecordHeader(header)) {
+      InputRecord record = ParseRecord(log, index);
+      if (record.kind == InputRecord::InvalidHeader) break;
+      if (record.kind == InputRecord::DepsRecord) {
         // Verify that input/output node IDs are valid.
-        int output_id = log.words[index + 1];
+        int output_id = record.u.deps.output_id;
         if (output_id < 0 || output_id >= next_node_id) break;
-        for (size_t i = 4; i < size; ++i) {
-          int input_id = log.words[index + i];
+        for (size_t i = 0; i < record.u.deps.deps_count; ++i) {
+          int input_id = record.u.deps.deps[i];
           if (input_id < 0 || input_id >= next_node_id) break;
         }
         AtomicUpdateMaximum(&dep_index[output_id], static_cast<ssize_t>(index));
         ++chunk.deps_count;
       } else {
         // Validate the path's checksum.
-        int checksum = log.words[index + size - 1];
-        if (checksum != ~next_node_id) break;
+        if (record.u.path.checksum != ~next_node_id) break;
         node_index[next_node_id] = index;
         ++next_node_id;
         ++chunk.final_node_count;
       }
-      index += size;
+      index += record.size;
     }
     // We'll exit early on a parser error.
     if (index < chunk.stop) {
@@ -481,19 +532,17 @@ bool DepsLog::Load(const string& path, State* state, string* err) {
   ParallelMap(thread_pool.get(), IntegralRange<int>(0, node_count),
       [this, state, log, &node_index](int node_id) {
     size_t index = node_index[node_id];
-    size_t header = log.words[index];
-    size_t size = RecordSizeInWords(header);
-    const char* path = reinterpret_cast<const char*>(&log.words[index + 1]);
-    size_t path_size = (size - 2) * sizeof(uint32_t);
-    if (path[path_size - 1] == '\0') --path_size;
-    if (path[path_size - 1] == '\0') --path_size;
-    if (path[path_size - 1] == '\0') --path_size;
+
+    InputRecord record = ParseRecord(log, index);
+    assert(record.kind == InputRecord::PathRecord);
+    assert(record.u.path.checksum == ~node_id);
+
     // It is not necessary to pass in a correct slash_bits here. It will
     // either be a Node that's in the manifest (in which case it will
     // already have a correct slash_bits that GetNode will look up), or it
     // is an implicit dependency from a .d which does not affect the build
     // command (and so need not have its slashes maintained).
-    Node* node = state->GetNode(StringPiece(path, path_size), 0);
+    Node* node = state->GetNode(record.u.path.path, 0);
     assert(node->id() < 0);
     node->set_id(node_id);
     nodes_[node_id] = node;
@@ -509,22 +558,19 @@ bool DepsLog::Load(const string& path, State* state, string* err) {
       ssize_t index = dep_index[node_id];
       if (index == -1) continue;
       ++unique_count;
-      size_t header = log.words[index];
-      size_t size = RecordSizeInWords(header);
-      assert(size != 0 && IsDepsRecordHeader(header));
-      int output_id = log.words[index + 1];
-      TimeStamp mtime;
-      mtime = (TimeStamp)(((uint64_t)(unsigned int)log.words[index+3] << 32) |
-                          (uint64_t)(unsigned int)log.words[index+2]);
-      int deps_count = size - 4;
-      Deps* deps = new Deps(mtime, deps_count);
-      for (int i = 0; i < deps_count; ++i) {
-        int input_id = log.words[index + 4 + i];
+
+      InputRecord record = ParseRecord(log, index);
+      assert(record.kind == InputRecord::DepsRecord);
+      assert(record.u.deps.output_id == node_id);
+
+      Deps* deps = new Deps(record.u.deps.mtime, record.u.deps.deps_count);
+      for (size_t i = 0; i < record.u.deps.deps_count; ++i) {
+        int input_id = record.u.deps.deps[i];
         Node* node = nodes_[input_id];
         assert(node != nullptr);
         deps->nodes[i] = node;
       }
-      deps_[output_id] = deps;
+      deps_[node_id] = deps;
     }
     return unique_count;
   });
