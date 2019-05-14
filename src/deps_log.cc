@@ -189,9 +189,10 @@ static inline bool IsDepsRecordHeader(size_t header) {
   return (header & 0x80000000) == 0x80000000;
 }
 
-static inline bool IsValidDepsRecordHeader(size_t header) {
-  return IsDepsRecordHeader(header) && RecordSizeInWords(header);
-}
+struct DepsLogWordSpan {
+  size_t begin; // starting index into a deps log buffer of uint32 words
+  size_t end; // stopping index
+};
 
 /// Split the v4 deps log into independently-parseable chunks using a heuristic.
 /// If the heuristic fails, we'll still load the file correctly, but it could be
@@ -208,7 +209,8 @@ static inline bool IsValidDepsRecordHeader(size_t header) {
 ///    deps:
 ///     - uint32 size -- high bit is set
 ///     - int32 output_path_id
-///     - uint64 output_path_mtime
+///     - uint32 output_path_mtime_lo
+///     - uint32 output_path_mtime_hi
 ///     - int32 input_path_id[...] -- every remaining word is an input ID
 ///
 /// To split the deps log into chunks, look for uint32 words with the value
@@ -230,50 +232,67 @@ static inline bool IsValidDepsRecordHeader(size_t header) {
 ///    I've seen in the Android build have a few hundred. Only a few have ~10K.)
 ///  - All deps records with <16K of dependencies are preceded by something that
 ///    the mtime check rejects:
-///     - A deps record with an mtime within a 524us span every 4s, with one
-///       dependency.
+///     - A deps record with an mtime within a 524us span every 4s, with zero or
+///       one dependency.
 ///     - A deps record with an mtime from 2262, with one or two dependencies.
-///     - A path record containing "xx xx 0[0-7] 80" (little-endian) or "80 0[0-7] xx xx"
-///       (big-endian) as the last or second-to-last word. The "0[0-7]" is a
-///       control character, and "0[0-7] 80" is invalid UTF-8.
+///     - A path record containing "xx xx 0[0-7] 80" (little-endian) or
+///       "80 0[0-7] xx xx" (big-endian) as the last or second-to-last word. The
+///       "0[0-7]" is a control character, and "0[0-7] 80" is invalid UTF-8.
 ///
-/// Maybe we can add a delimiter to the log format and replace this code.
-static std::vector<std::pair<size_t, size_t>>
-SplitDepsLog(const uint32_t* table, size_t size, ThreadPool* thread_pool) {
-  if (size == 0) return {};
+/// Maybe we can add a delimiter to the log format and replace this heuristic.
+size_t MustBeDepsRecordHeader(DepsLogData log, size_t index) {
+  assert(index < log.size);
 
-  std::vector<std::pair<size_t, size_t>> blind_splits = SplitByThreads(size);
-  std::vector<std::pair<size_t, size_t>> chunks;
+  size_t this_header = log.words[index];
+  if ((this_header & 0xffff0000) != 0x80000000) return false;
+  if ((this_header & 0x0000ffff) == 0) return false;
+
+  // We've either found a deps record or an mtime. If it's an mtime, the
+  // word two or three spaces back will be a valid deps size (0x800xxxxx).
+  auto might_be_deps_record_header = [](size_t header) {
+    return (header & 0x80000000) == 0x80000000 &&
+           (header & 0x7fffffff) <= kMaxRecordSize;
+  };
+  if (index >= 3 && might_be_deps_record_header(log.words[index - 3])) {
+    return false;
+  }
+  if (index >= 2 && might_be_deps_record_header(log.words[index - 2])) {
+    return false;
+  }
+
+  // Success: As long as the deps log is valid up to this point, this index
+  // must start a deps record.
+  return true;
+}
+
+static std::vector<DepsLogWordSpan>
+SplitDepsLog(DepsLogData log, ThreadPool* thread_pool) {
+  if (log.size == 0) return {};
+
+  std::vector<std::pair<size_t, size_t>> blind_splits =
+      SplitByThreads(log.size);
+  std::vector<DepsLogWordSpan> chunks;
   size_t chunk_start = 0;
 
   auto split_candidates = ParallelMap(thread_pool, blind_splits,
-      [table](std::pair<size_t, size_t> chunk) {
-    // Skip the first two words to allow for the mtime check later on.
-    for (size_t index = chunk.first + 3; index < chunk.second; ++index) {
-      size_t this_header = table[index];
-      if (!IsValidDepsRecordHeader(this_header)) continue;
-      if ((this_header & 0xFFFF0000) != 0x80000000) continue;
-
-      // We've either found a deps record or a mtime. If it's an mtime, the
-      // word two or three spaces back will be a valid deps size (0x800xxxxx).
-      if (IsValidDepsRecordHeader(table[index - 3])) continue;
-      if (IsValidDepsRecordHeader(table[index - 2])) continue;
-
-      // Success: In a valid deps log, this index must start a deps record.
-      return index;
+      [log](std::pair<size_t, size_t> chunk) {
+    for (size_t i = chunk.first; i < chunk.second; ++i) {
+      if (MustBeDepsRecordHeader(log, i)) {
+        return i;
+      }
     }
     return SIZE_MAX;
   });
   for (size_t candidate : split_candidates) {
-    if (candidate != SIZE_MAX) {
-      assert(chunk_start < candidate);
+    assert(chunk_start <= candidate);
+    if (candidate != SIZE_MAX && chunk_start < candidate) {
       chunks.push_back({ chunk_start, candidate });
       chunk_start = candidate;
     }
   }
 
-  assert(chunk_start < size);
-  chunks.push_back({ chunk_start, size });
+  assert(chunk_start < log.size);
+  chunks.push_back({ chunk_start, log.size });
   return chunks;
 }
 
@@ -358,11 +377,10 @@ bool DepsLog::Load(const string& path, State* state, string* err) {
   std::unique_ptr<ThreadPool> thread_pool = CreateThreadPool();
 
   std::vector<Chunk> chunks;
-  for (std::pair<size_t, size_t> span :
-      SplitDepsLog(log.words, log.size, thread_pool.get())) {
+  for (DepsLogWordSpan span : SplitDepsLog(log, thread_pool.get())) {
     Chunk chunk {};
-    chunk.start = span.first;
-    chunk.stop = span.second;
+    chunk.start = span.begin;
+    chunk.stop = span.end;
     chunks.push_back(chunk);
   }
 

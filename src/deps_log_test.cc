@@ -498,4 +498,95 @@ TEST_F(DepsLogTest, TruncatedRecovery) {
   }
 }
 
+TEST_F(DepsLogTest, MustBeDepsRecordHeader) {
+  // Mark a word as a candidate.
+  static constexpr uint64_t kCandidate = 0x100000000;
+
+  // Verifies that MustBeDepsRecordHeader returns the expected value. Returns
+  // true on success.
+  auto do_test = [](std::vector<uint64_t> words) -> bool {
+    std::vector<uint32_t> data;
+    for (uint64_t word : words) {
+      // Coerce from uint64_t to uint32_t to mask off the kCandidate flag.
+      data.push_back(word);
+    }
+    DepsLogData log;
+    log.words = data.data();
+    log.size = data.size();
+    for (size_t i = 0; i < words.size(); ++i) {
+      const bool expected = (words[i] & kCandidate) == kCandidate;
+      if (expected != MustBeDepsRecordHeader(log, i)) {
+        printf("\n%s,%d: bad index: %zu\n", __FILE__, __LINE__, i);
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // Two valid deps records with no dependencies. Each record's header is
+  // recognized as the start of a deps record. The first record has an mtime_hi
+  // from 2262.
+  EXPECT_TRUE(do_test({
+    // header               output_id   mtime_lo    mtime_hi
+    0x8000000c|kCandidate,  1,          2,          0x80000100,
+    0x8000000c|kCandidate,  3,          4,          5,
+  }));
+
+  // The first record's mtime_lo is within a 524us window. The second record's
+  // header looks like a potential mtime_lo for 0x8007fffc.
+  EXPECT_TRUE(do_test({
+    // header               output_id   mtime_lo    mtime_hi
+    0x8000000c|kCandidate,  1,          0x8007fffc, 2,
+    0x8000000c,             3,          4,          5,
+  }));
+
+  // 0x80080000 is above the maximum record size, so it is rejected as a
+  // possible header.
+  EXPECT_TRUE(do_test({
+    // header               output_id   mtime_lo    mtime_hi
+    0x8000000c|kCandidate,  1,          0x80080000, 2,
+    0x8000000c|kCandidate,  3,          4,          5,
+  }));
+
+  // Two deps records with >16K inputs each. The header could be confused with a
+  // path string containing control characters, so it's not a candidate.
+  EXPECT_TRUE(do_test({
+    // header               output_id   mtime_lo    mtime_hi
+    0x80010101,             1,          2,          3,    // input IDs elided...
+    0x80010101,             4,          5,          6,    // input IDs elided...
+  }));
+
+  // The first record has a single dependency and an mtime_hi from 2262. The
+  // second deps record's header looks like a potential mtime_lo for 0x80000100.
+  EXPECT_TRUE(do_test({
+    // header               output_id   mtime_lo    mtime_hi
+    0x80000010|kCandidate,  1,          2,          0x80000100, 3,
+    0x8000000c,             4,          5,          6,
+  }));
+
+  // The first deps record's mtime_lo is within a 524us window, and the second
+  // record's header looks like a potential mtime_hi for 0x80000100.
+  EXPECT_TRUE(do_test({
+    // header               output_id   mtime_lo    mtime_hi
+    0x80000010|kCandidate,  1,          0x80000100, 2,          3,
+    0x8000000c,             4,          5,          6,
+  }));
+
+  // The first record has two dependencies, so its mtime_lo doesn't disqualify
+  // the next record's header.
+  EXPECT_TRUE(do_test({
+    // header               output_id   mtime_lo    mtime_hi
+    0x80000014|kCandidate,  1,          0x80000100, 2,          3,          4,
+    0x8000000c|kCandidate,  5,          6,          7,
+  }));
+
+  // The first deps record's mtime_hi is from 2262, and the second record's
+  // header looks like a potential mtime_hi for 0x80000100.
+  EXPECT_TRUE(do_test({
+    // header               output_id   mtime_lo    mtime_hi
+    0x80000014|kCandidate,  1,          2,          0x80000100, 3,          4,
+    0x8000000c,             5,          6,          7,
+  }));
+}
+
 }  // anonymous namespace

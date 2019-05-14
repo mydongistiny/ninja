@@ -34,6 +34,8 @@ struct DepsLogData {
   size_t size = 0;
 };
 
+size_t MustBeDepsRecordHeader(DepsLogData log, size_t index);
+
 /// As build commands run they can output extra dependency information
 /// (e.g. header dependencies for C source) dynamically.  DepsLog collects
 /// that information at build time and uses it for subsequent builds.
