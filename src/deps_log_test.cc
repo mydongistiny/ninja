@@ -498,6 +498,114 @@ TEST_F(DepsLogTest, TruncatedRecovery) {
   }
 }
 
+template <typename Func>
+static void DoLoadInvalidLogTest(Func&& func) {
+  State state;
+  DepsLog log;
+  std::string err;
+  ASSERT_TRUE(log.Load(kTestFilename, &state, &err));
+  ASSERT_EQ("premature end of file; recovering", err);
+  func(&state, &log);
+}
+
+TEST_F(DepsLogTest, LoadInvalidLog) {
+  struct Item {
+    Item(int num) : is_num(true), num(num) {}
+    Item(const char* str) : is_num(false), str(str) {}
+
+    bool is_num;
+    uint32_t num;
+    const char* str;
+  };
+
+  auto write_file = [](std::vector<Item> items) {
+    FILE* fp = fopen(kTestFilename, "wb");
+    for (const Item& item : items) {
+      if (item.is_num) {
+        ASSERT_EQ(1, fwrite(&item.num, sizeof(item.num), 1, fp));
+      } else {
+        ASSERT_EQ(strlen(item.str), fwrite(item.str, 1, strlen(item.str), fp));
+      }
+    }
+    fclose(fp);
+  };
+
+  const int kCurrentVersion = 4;
+  auto path_hdr = [](int path_len) -> int {
+    return RoundUp(path_len, 4) + 4;
+  };
+  auto deps_hdr = [](int deps_cnt) -> int {
+    return 0x80000000 | ((3 * sizeof(uint32_t)) + (deps_cnt * 4));
+  };
+
+  write_file({
+    "# ninjadeps\n", kCurrentVersion,
+    path_hdr(4), "foo0", ~0, // node #0
+    path_hdr(4), "foo1", ~2, // invalid path ID
+  });
+  DoLoadInvalidLogTest([](State* state, DepsLog* log) {
+    ASSERT_EQ(0, state->LookupNode("foo0")->id());
+    ASSERT_EQ(nullptr, state->LookupNode("foo1"));
+  });
+
+  write_file({
+    "# ninjadeps\n", kCurrentVersion,
+    path_hdr(4), "foo0", ~0, // node #0
+    deps_hdr(1), /*node*/0, /*mtime*/5, 0, /*node*/1, // invalid src ID
+    path_hdr(4), "foo1", ~1, // node #1
+  });
+  DoLoadInvalidLogTest([](State* state, DepsLog* log) {
+    ASSERT_EQ(0, state->LookupNode("foo0")->id());
+    ASSERT_EQ(nullptr, log->GetDeps(state->LookupNode("foo0")));
+    ASSERT_EQ(nullptr, state->LookupNode("foo1"));
+  });
+
+  write_file({
+    "# ninjadeps\n", kCurrentVersion,
+    path_hdr(4), "foo0", ~0, // node #0
+    deps_hdr(1), /*node*/1, /*mtime*/5, 0, /*node*/0, // invalid out ID
+    path_hdr(4), "foo1", ~1, // node #1
+  });
+  DoLoadInvalidLogTest([](State* state, DepsLog* log) {
+    ASSERT_EQ(0, state->LookupNode("foo0")->id());
+    ASSERT_EQ(nullptr, state->LookupNode("foo1"));
+  });
+
+  write_file({
+    "# ninjadeps\n", kCurrentVersion,
+    path_hdr(4), "foo0", ~0, // node #0
+    path_hdr(4), "foo1", ~1, // node #1
+    path_hdr(4), "foo2", ~2, // node #2
+    deps_hdr(1), /*node*/2, /*mtime*/5, 0, /*node*/1,
+    deps_hdr(1), /*node*/2, /*mtime*/6, 0, /*node*/3, // invalid src ID
+
+    // No records after the invalid record are parsed.
+    path_hdr(4), "foo3", ~3, // node #3
+    deps_hdr(1), /*node*/3, /*mtime*/7, 0, /*node*/0,
+    path_hdr(4), "foo4", ~4, // node #4
+    deps_hdr(1), /*node*/4, /*mtime*/8, 0, /*node*/0,
+
+    // Truncation must be handled before looking for the last deps record
+    // that outputs a given node.
+    deps_hdr(1), /*node*/2, /*mtime*/9, 0, /*node*/0,
+    deps_hdr(1), /*node*/2, /*mtime*/9, 0, /*node*/3,
+  });
+  DoLoadInvalidLogTest([](State* state, DepsLog* log) {
+    ASSERT_EQ(0, state->LookupNode("foo0")->id());
+    ASSERT_EQ(1, state->LookupNode("foo1")->id());
+    ASSERT_EQ(2, state->LookupNode("foo2")->id());
+    ASSERT_EQ(nullptr, state->LookupNode("foo3"));
+    ASSERT_EQ(nullptr, state->LookupNode("foo4"));
+
+    ASSERT_EQ(nullptr, log->GetDeps(state->LookupNode("foo1")));
+
+    DepsLog::Deps* deps = log->GetDeps(state->LookupNode("foo2"));
+    ASSERT_EQ(5, deps->mtime);
+    ASSERT_EQ(1, deps->node_count);
+    ASSERT_EQ(1, deps->nodes[0]->id());
+  });
+}
+
 TEST_F(DepsLogTest, MustBeDepsRecordHeader) {
   // Mark a word as a candidate.
   static constexpr uint64_t kCandidate = 0x100000000;
