@@ -127,6 +127,7 @@ struct NinjaMain : public BuildLogUser {
   // The various subcommands, run via "-t XXX".
   int ToolGraph(const Options* options, int argc, char* argv[]);
   int ToolPath(const Options* options, int argc, char* argv[]);
+  int ToolInputs(const Options* options, int argc, char* argv[]);
   int ToolQuery(const Options* options, int argc, char* argv[]);
   int ToolDeps(const Options* options, int argc, char* argv[]);
   int ToolBrowse(const Options* options, int argc, char* argv[]);
@@ -410,6 +411,104 @@ int NinjaMain::ToolPath(const Options* options, int argc, char* argv[]) {
   Error("%s does not depend on %s", out->path().c_str(), in->path().c_str());
   return 1;
 }
+
+void ToolInputsProcessNodeDeps(Node* node, DepsLog* deps_log, bool leaf_only,
+                               bool include_deps);
+
+void ToolInputsProcessNode(Node* input, DepsLog* deps_log, bool leaf_only,
+                           bool include_deps) {
+  if (input->InputsChecked()) return;
+  input->MarkInputsChecked();
+
+  // Recursively process input edges, possibly printing this node here.
+  Edge* input_edge = input->in_edge();
+  if (input_edge == nullptr || !leaf_only) {
+    printf("%s\n", input->path().c_str());
+  }
+  if (input_edge) {
+    for (Node* input : input_edge->inputs_) {
+      ToolInputsProcessNode(input, deps_log, leaf_only, include_deps);
+    }
+    if (include_deps && input_edge->outputs_.size() > 0) {
+      // Check deps on the input edge's first output because deps log entries
+      // are only stored on the first output of an edge.
+      ToolInputsProcessNodeDeps(input_edge->outputs_[0], deps_log, leaf_only,
+                                include_deps);
+    }
+  }
+}
+
+void ToolInputsProcessNodeDeps(Node* node, DepsLog* deps_log, bool leaf_only,
+                               bool include_deps) {
+  // Print all of this node's deps from the deps log. This often includes files
+  // that are not known by the node's input edge.
+  if (deps_log->IsDepsEntryLiveFor(node)) {
+    if (DepsLog::Deps* deps = deps_log->GetDeps(node); deps != nullptr) {
+      for (int i = 0; i < deps->node_count; ++i) {
+        if (Node* dep = deps->nodes[i]; dep != nullptr) {
+          ToolInputsProcessNode(dep, deps_log, leaf_only, include_deps);
+        }
+      }
+    }
+  }
+}
+
+int NinjaMain::ToolInputs(const Options* options, int argc, char* argv[]) {
+  // The inputs tool uses getopt, and expects argv[0] to contain the name of
+  // the tool, i.e. "inputs".
+  ++argc;
+  --argv;
+
+  bool leaf_only = true;
+  bool include_deps = false;
+
+  optind = 1;
+  int opt;
+  while ((opt = getopt(argc, argv, "idh")) != -1) {
+    switch (opt) {
+      case 'i':
+        leaf_only = false;
+        break;
+      case 'd':
+        include_deps = true;
+        break;
+      case 'h':
+      default:
+        printf(
+            "usage: ninja -t inputs [options] target [target...]\n\n"
+            "options:\n"
+            "  -i    Include intermediate inputs.\n"
+            "  -d    Include deps from the deps log file (.ninja_deps).\n");
+        return 1;
+    }
+  }
+  argv += optind;
+  argc -= optind;
+
+  vector<Node*> nodes;
+  string err;
+  if (!CollectTargetsFromArgs(argc, argv, &nodes, &err)) {
+    Error("%s", err.c_str());
+    return 1;
+  }
+
+  for (Node* node : nodes) {
+    node->MarkInputsChecked();
+    // Call ToolInputsProcessNode on this node's inputs, and not on itself,
+    // so that this node is not included in the output.
+    if (Edge* edge = node->in_edge(); edge != nullptr) {
+      for (Node* input : edge->inputs_) {
+        ToolInputsProcessNode(input, &deps_log_, leaf_only, include_deps);
+      }
+      if (include_deps && edge->outputs_.size() > 0) {
+        ToolInputsProcessNodeDeps(edge->outputs_[0], &deps_log_, leaf_only,
+                                  include_deps);
+      }
+    }
+  }
+  return 0;
+}
+
 
 int NinjaMain::ToolQuery(const Options* options, int argc, char* argv[]) {
   if (argc == 0) {
@@ -891,6 +990,8 @@ const Tool* ChooseTool(const string& tool_name) {
       Tool::RUN_AFTER_LOGS, &NinjaMain::ToolDeps },
     { "graph", "output graphviz dot file for targets",
       Tool::RUN_AFTER_LOAD, &NinjaMain::ToolGraph },
+    { "inputs", "show all (recursive) inputs for a target",
+      Tool::RUN_AFTER_LOGS, &NinjaMain::ToolInputs },
     { "path", "find dependency path between two targets",
       Tool::RUN_AFTER_LOGS, &NinjaMain::ToolPath },
     { "query", "show inputs/outputs for a path",

@@ -202,6 +202,10 @@ struct Node {
 
   void Dump(const char* prefix="") const;
 
+  // Used in the inputs debug tool.
+  bool InputsChecked() const { return inputs_checked_; }
+  void MarkInputsChecked() { inputs_checked_ = true; }
+
 private:
   const HashedStr path_;
 
@@ -243,6 +247,10 @@ private:
   std::atomic<EdgeList*> out_edges_ { nullptr };
 
   std::vector<Edge*> dep_scan_out_edges_;
+
+  /// Stores if this node's inputs have been already computed. Used in the
+  /// inputs debug tool.
+  bool inputs_checked_ = false;
 };
 
 struct EdgeEval {
