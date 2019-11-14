@@ -587,7 +587,7 @@ void EdgeEval::AppendPathList(std::string* out_append,
 
     const string& path = (*it)->PathDecanonicalized();
     if (escape_in_out_ == kShellEscape) {
-#if _WIN32
+#ifdef _WIN32
       GetWin32EscapedString(path, out_append);
 #else
       GetShellEscapedString(path, out_append);
