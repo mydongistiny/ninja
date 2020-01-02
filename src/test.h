@@ -137,6 +137,9 @@ struct VirtualFileSystem : public DiskInterface {
   /// "Create" a file with contents.
   void Create(const string& path, const string& contents);
 
+  /// "Create" a symlink pointing to another path.
+  void CreateSymlink(const string& path, const string& dest);
+
   /// Tick "time" forwards; subsequent file operations will be newer than
   /// previous ones.
   int Tick() {
@@ -159,6 +162,7 @@ struct VirtualFileSystem : public DiskInterface {
     int mtime;
     string stat_error;  // If mtime is -1.
     string contents;
+    bool is_symlink = false;
   };
 
   vector<string> directories_made_;

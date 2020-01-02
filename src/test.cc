@@ -175,9 +175,20 @@ void VirtualFileSystem::Create(const string& path,
   files_created_.insert(path);
 }
 
+void VirtualFileSystem::CreateSymlink(const string& path,
+                                      const string& dest) {
+  files_[path].mtime = now_;
+  files_[path].contents = dest;
+  files_[path].is_symlink = true;
+  files_created_.insert(path);
+}
+
 TimeStamp VirtualFileSystem::Stat(const string& path, string* err) const {
   FileMap::const_iterator i = files_.find(path);
   if (i != files_.end()) {
+    if (i->second.is_symlink) {
+      return Stat(i->second.contents, err);
+    }
     *err = i->second.stat_error;
     return i->second.mtime;
   }
@@ -216,6 +227,9 @@ FileReader::Status VirtualFileSystem::LoadFile(const std::string& path,
   files_read_.push_back(path);
   FileMap::iterator i = files_.find(path);
   if (i != files_.end()) {
+    if (i->second.is_symlink) {
+      return LoadFile(i->second.contents, result, err);
+    }
     std::string& contents = i->second.contents;
     *result = std::unique_ptr<HeapLoadedFile>(new HeapLoadedFile(path,
                                                                  contents));

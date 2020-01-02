@@ -335,6 +335,90 @@ TEST_F(GraphTest, PhonySelfReferenceError) {
   ASSERT_EQ("dependency cycle: a -> a [-w phonycycle=err]", err);
 }
 
+TEST_F(GraphTest, OutputSymlinkSourceUpdate) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"build other: cat\n"
+"build sym: cat\n"
+"build out: cat | sym\n"));
+
+  fs_.Create("out", "");
+  fs_.CreateSymlink("sym", "other");
+  fs_.Tick();
+  fs_.Create("other", "");
+
+  string err;
+  EXPECT_TRUE(scan_.RecomputeDirty(GetNode("out"), &err));
+  ASSERT_EQ("", err);
+
+  EXPECT_TRUE(GetNode("out")->dirty());
+}
+
+TEST_F(GraphTest, OutputSymlinkDangling) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"build sym: cat\n"
+"build out: cat | sym\n"));
+
+  fs_.CreateSymlink("sym", "dangling");
+  fs_.Create("out", "");
+
+  string err;
+  EXPECT_TRUE(scan_.RecomputeDirty(GetNode("out"), &err));
+  ASSERT_EQ("", err);
+
+  EXPECT_TRUE(GetNode("out")->dirty());
+}
+
+TEST_F(GraphTest, InputSymlink) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"build out: cat sym\n"));
+
+  fs_.Create("out", "");
+  fs_.CreateSymlink("sym", "in");
+  fs_.Tick();
+  fs_.Create("in", "");
+
+  string err;
+  EXPECT_TRUE(scan_.RecomputeDirty(GetNode("out"), &err));
+  ASSERT_EQ("", err);
+
+  EXPECT_TRUE(GetNode("out")->dirty());
+}
+
+TEST_F(GraphTest, InputSymlinkUpdate) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"build out: cat sym\n"));
+
+  fs_.Create("out", "");
+  fs_.Create("in", "");
+  fs_.Tick();
+  fs_.CreateSymlink("sym", "in");
+
+  string err;
+  EXPECT_TRUE(scan_.RecomputeDirty(GetNode("out"), &err));
+  ASSERT_EQ("", err);
+
+  // This can be incorrect if the destination of the symlink changed to
+  // a file with an equal or older timestamp.
+  EXPECT_FALSE(GetNode("out")->dirty());
+}
+
+TEST_F(GraphTest, InputSymlinkDangling) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"build out: cat sym\n"));
+
+  fs_.Create("out", "");
+  fs_.CreateSymlink("sym", "in");
+
+  string err;
+  EXPECT_TRUE(scan_.RecomputeDirty(GetNode("out"), &err));
+  ASSERT_EQ("", err);
+
+  EXPECT_TRUE(GetNode("out")->dirty());
+}
+
+
+// TODO: tests around directory timestamps
+
 TEST_F(GraphTest, DependencyCycle) {
   AssertParse(&state_,
 "build out: cat mid\n"
