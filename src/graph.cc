@@ -29,7 +29,7 @@
 
 bool Node::PrecomputeStat(DiskInterface* disk_interface, std::string* err) {
   if (in_edge() != nullptr) {
-    return (precomputed_mtime_ = disk_interface->LStat(path_.str(), err)) != -1;
+    return (precomputed_mtime_ = disk_interface->LStat(path_.str(), nullptr, err)) != -1;
   } else {
     return (precomputed_mtime_ = disk_interface->Stat(path_.str(), err)) != -1;
   }
@@ -37,7 +37,7 @@ bool Node::PrecomputeStat(DiskInterface* disk_interface, std::string* err) {
 
 bool Node::Stat(DiskInterface* disk_interface, string* err) {
   if (in_edge() != nullptr) {
-    return (mtime_ = disk_interface->LStat(path_.str(), err)) != -1;
+    return (mtime_ = disk_interface->LStat(path_.str(), nullptr, err)) != -1;
   } else {
     return (mtime_ = disk_interface->Stat(path_.str(), err)) != -1;
   }

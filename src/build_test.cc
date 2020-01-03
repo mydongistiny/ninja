@@ -609,7 +609,8 @@ bool FakeCommandRunner::StartCommand(Edge* edge) {
   } else if (edge->rule().name() == "true" ||
              edge->rule().name() == "fail" ||
              edge->rule().name() == "interrupt" ||
-             edge->rule().name() == "console") {
+             edge->rule().name() == "console" ||
+             edge->rule().name() == "mkdir") {
     // Don't do anything.
   } else {
     printf("unknown command\n");
@@ -638,6 +639,18 @@ bool FakeCommandRunner::WaitForCommand(Result* result) {
       result->status = ExitSuccess;
     else
       result->status = ExitFailure;
+    last_command_ = NULL;
+    return true;
+  }
+
+  if (edge->rule().name() == "mkdir") {
+    result->status = ExitSuccess;
+    for (vector<Node*>::iterator out = edge->outputs_.begin();
+         out != edge->outputs_.end(); ++out) {
+      if (!fs_->MakeDir((*out)->path())) {
+        result->status = ExitFailure;
+      }
+    }
     last_command_ = NULL;
     return true;
   }
@@ -2338,6 +2351,43 @@ TEST_F(BuildTest, Console) {
   EXPECT_TRUE(builder_.Build(&err));
   EXPECT_EQ("", err);
   ASSERT_EQ(1u, command_runner_.commands_ran_.size());
+}
+
+TEST_F(BuildTest, OutputDirectoryWarning) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule mkdir\n"
+"  command = mkdir $out\n"
+"build outdir: mkdir\n"));
+
+  string err;
+  EXPECT_TRUE(builder_.AddTarget("outdir", &err));
+  EXPECT_EQ("", err);
+  EXPECT_TRUE(builder_.Build(&err));
+  EXPECT_EQ("", err);
+
+  EXPECT_EQ("ninja: outputs should be files, not directories: outdir", status_.last_output_);
+}
+
+TEST_F(BuildTest, OutputDirectoryError) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule mkdir\n"
+"  command = mkdir $out\n"
+"build outdir: mkdir\n"));
+
+  config_.output_directory_should_err = true;
+
+  Builder builder(&state_, config_, NULL, NULL, &fs_, &status_, 0);
+  builder.command_runner_.reset(&command_runner_);
+
+  string err;
+  EXPECT_TRUE(builder.AddTarget("outdir", &err));
+  EXPECT_EQ("", err);
+  EXPECT_FALSE(builder.Build(&err));
+  EXPECT_EQ("subcommand failed", err);
+
+  EXPECT_EQ("ninja: outputs should be files, not directories: outdir", status_.last_output_);
+
+  builder.command_runner_.release();
 }
 
 TEST_F(BuildWithDepsLogTest, MissingDepfileWarning) {

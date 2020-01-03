@@ -148,7 +148,7 @@ struct VirtualFileSystem : public DiskInterface {
 
   // DiskInterface
   virtual TimeStamp Stat(const string& path, string* err) const;
-  virtual TimeStamp LStat(const string& path, string* err) const;
+  virtual TimeStamp LStat(const string& path, bool* is_dir, string* err) const;
   virtual bool IsStatThreadSafe() const;
   virtual bool WriteFile(const string& path, const string& contents);
   virtual bool MakeDir(const string& path);
@@ -165,9 +165,15 @@ struct VirtualFileSystem : public DiskInterface {
     string contents;
     bool is_symlink = false;
   };
+  struct DirEntry {
+    int mtime;
+    string stat_error;  // If mtime is -1.
+  };
 
   vector<string> directories_made_;
   vector<string> files_read_;
+  typedef map<string, DirEntry> DirMap;
+  DirMap dirs_;
   typedef map<string, Entry> FileMap;
   FileMap files_;
   set<string> files_removed_;

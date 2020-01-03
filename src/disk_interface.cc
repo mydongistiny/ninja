@@ -229,7 +229,7 @@ TimeStamp RealDiskInterface::Stat(const string& path, string* err) const {
 #endif
 }
 
-TimeStamp RealDiskInterface::LStat(const string& path, string* err) const {
+TimeStamp RealDiskInterface::LStat(const string& path, bool* is_dir, string* err) const {
   METRIC_RECORD("node lstat");
 #ifdef _WIN32
 #error unimplemented
@@ -240,6 +240,9 @@ TimeStamp RealDiskInterface::LStat(const string& path, string* err) const {
       return 0;
     *err = "lstat(" + path + "): " + strerror(errno);
     return -1;
+  }
+  if (is_dir != nullptr) {
+    *is_dir = S_ISDIR(st.st_mode);
   }
   return StatTimestamp(st);
 #endif

@@ -380,10 +380,11 @@ void Builder::Cleanup() {
         // mentioned in a depfile, and the command touches its depfile
         // but is interrupted before it touches its output file.)
         string err;
-        TimeStamp new_mtime = disk_interface_->LStat((*o)->path(), &err);
+        bool is_dir = false;
+        TimeStamp new_mtime = disk_interface_->LStat((*o)->path(), &is_dir, &err);
         if (new_mtime == -1)  // Log and ignore LStat() errors.
           status_->Error("%s", err.c_str());
-        if (!depfile.empty() || (*o)->mtime() != new_mtime)
+        if (!is_dir && (!depfile.empty() || (*o)->mtime() != new_mtime))
           disk_interface_->RemoveFile((*o)->path());
       }
       if (!depfile.empty())
@@ -584,38 +585,46 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
   end_time_millis = GetTimeMillis() - start_time_millis_;
   running_edges_.erase(i);
 
-  status_->BuildEdgeFinished(edge, end_time_millis, result);
-
-  // The rest of this function only applies to successful commands.
-  if (!result->success()) {
-    plan_.EdgeFinished(edge, Plan::kEdgeFailed);
-    return true;
-  }
-
   // Restat the edge outputs
   TimeStamp output_mtime = 0;
-  bool restat = edge->IsRestat();
-  if (!config_.dry_run) {
-    bool node_cleaned = false;
+  if (result->success() && !config_.dry_run) {
+    bool restat = edge->IsRestat();
+    vector<Node*> nodes_cleaned;
 
     for (vector<Node*>::iterator o = edge->outputs_.begin();
          o != edge->outputs_.end(); ++o) {
-      TimeStamp new_mtime = disk_interface_->LStat((*o)->path(), err);
+      bool is_dir = false;
+      TimeStamp new_mtime = disk_interface_->LStat((*o)->path(), &is_dir, err);
       if (new_mtime == -1)
         return false;
+      if (is_dir) {
+        if (!result->output.empty())
+          result->output.append("\n");
+        result->output.append("ninja: outputs should be files, not directories: ");
+        result->output.append((*o)->path());
+        if (config_.output_directory_should_err) {
+          result->status = ExitFailure;
+        }
+      }
       if (new_mtime > output_mtime)
         output_mtime = new_mtime;
       if ((*o)->mtime() == new_mtime && restat) {
+        nodes_cleaned.push_back(*o);
+      }
+    }
+
+    status_->BuildEdgeFinished(edge, end_time_millis, result);
+
+    if (result->success() && !nodes_cleaned.empty()) {
+      for (vector<Node*>::iterator o = nodes_cleaned.begin();
+           o != nodes_cleaned.end(); ++o) {
         // The rule command did not change the output.  Propagate the clean
         // state through the build graph.
         // Note that this also applies to nonexistent outputs (mtime == 0).
         if (!plan_.CleanNode(&scan_, *o, err))
           return false;
-        node_cleaned = true;
       }
-    }
 
-    if (node_cleaned) {
       TimeStamp restat_mtime = 0;
       // If any output was cleaned, find the most recent mtime of any
       // (existing) non-order-only input or the depfile.
@@ -623,7 +632,7 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
            i != edge->inputs_.end() - edge->order_only_deps_; ++i) {
         TimeStamp input_mtime;
         if ((*i)->in_edge() != nullptr) {
-          input_mtime = disk_interface_->LStat((*i)->path(), err);
+          input_mtime = disk_interface_->LStat((*i)->path(), nullptr, err);
         } else {
           input_mtime = disk_interface_->Stat((*i)->path(), err);
         }
@@ -648,9 +657,16 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
 
       output_mtime = restat_mtime;
     }
+  } else {
+    status_->BuildEdgeFinished(edge, end_time_millis, result);
   }
 
-  plan_.EdgeFinished(edge, Plan::kEdgeSucceeded);
+  plan_.EdgeFinished(edge, result->success() ? Plan::kEdgeSucceeded : Plan::kEdgeFailed);
+
+  // The rest of this function only applies to successful commands.
+  if (!result->success()) {
+    return true;
+  }
 
   // Delete any left over response file.
   string rspfile = edge->GetUnescapedRspfile();
@@ -667,7 +683,7 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
 
   if (!deps_type.empty() && !config_.dry_run) {
     Node* out = edge->outputs_[0];
-    TimeStamp deps_mtime = disk_interface_->LStat(out->path(), err);
+    TimeStamp deps_mtime = disk_interface_->LStat(out->path(), nullptr, err);
     if (deps_mtime == -1)
       return false;
     if (!scan_.deps_log()->RecordDeps(out, deps_mtime, deps_nodes)) {

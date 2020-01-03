@@ -184,6 +184,11 @@ void VirtualFileSystem::CreateSymlink(const string& path,
 }
 
 TimeStamp VirtualFileSystem::Stat(const string& path, string* err) const {
+  DirMap::const_iterator d = dirs_.find(path);
+  if (d != dirs_.end()) {
+    *err = d->second.stat_error;
+    return d->second.mtime;
+  }
   FileMap::const_iterator i = files_.find(path);
   if (i != files_.end()) {
     if (i->second.is_symlink) {
@@ -195,9 +200,18 @@ TimeStamp VirtualFileSystem::Stat(const string& path, string* err) const {
   return 0;
 }
 
-TimeStamp VirtualFileSystem::LStat(const string& path, string* err) const {
+TimeStamp VirtualFileSystem::LStat(const string& path, bool* is_dir, string* err) const {
+  DirMap::const_iterator d = dirs_.find(path);
+  if (d != dirs_.end()) {
+    if (is_dir != nullptr)
+      *is_dir = true;
+    *err = d->second.stat_error;
+    return d->second.mtime;
+  }
   FileMap::const_iterator i = files_.find(path);
   if (i != files_.end()) {
+    if (is_dir != nullptr)
+      *is_dir = false;
     *err = i->second.stat_error;
     return i->second.mtime;
   }
@@ -209,11 +223,42 @@ bool VirtualFileSystem::IsStatThreadSafe() const {
 }
 
 bool VirtualFileSystem::WriteFile(const string& path, const string& contents) {
+  if (files_.find(path) == files_.end()) {
+    if (dirs_.find(path) != dirs_.end())
+      return false;
+
+    string::size_type slash_pos = path.find_last_of("/");
+    if (slash_pos != string::npos) {
+      DirMap::iterator d = dirs_.find(path.substr(0, slash_pos));
+      if (d != dirs_.end()) {
+        d->second.mtime = now_;
+      } else {
+        return false;
+      }
+    }
+  }
+
   Create(path, contents);
   return true;
 }
 
 bool VirtualFileSystem::MakeDir(const string& path) {
+  if (dirs_.find(path) != dirs_.end())
+    return true;
+  if (files_.find(path) != files_.end())
+    return false;
+
+  string::size_type slash_pos = path.find_last_of("/");
+  if (slash_pos != string::npos) {
+    DirMap::iterator d = dirs_.find(path.substr(0, slash_pos));
+    if (d != dirs_.end()) {
+      d->second.mtime = now_;
+    } else {
+      return false;
+    }
+  }
+
+  dirs_[path].mtime = now_;
   directories_made_.push_back(path);
   return true;  // success
 }
@@ -249,11 +294,18 @@ FileReader::Status VirtualFileSystem::LoadFile(const std::string& path,
 }
 
 int VirtualFileSystem::RemoveFile(const string& path) {
-  if (find(directories_made_.begin(), directories_made_.end(), path)
-      != directories_made_.end())
+  if (dirs_.find(path) != dirs_.end())
     return -1;
   FileMap::iterator i = files_.find(path);
   if (i != files_.end()) {
+    string::size_type slash_pos = path.find_last_of("/");
+    if (slash_pos != string::npos) {
+      DirMap::iterator d = dirs_.find(path.substr(0, slash_pos));
+      if (d != dirs_.end()) {
+        d->second.mtime = now_;
+      }
+    }
+
     files_.erase(i);
     files_removed_.insert(path);
     return 0;

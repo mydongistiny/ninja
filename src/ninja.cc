@@ -176,7 +176,7 @@ struct NinjaMain : public BuildLogUser {
     // Do keep entries around for files which still exist on disk, for
     // generators that want to use this information.
     string err;
-    TimeStamp mtime = disk_interface_.LStat(s.AsString(), &err);
+    TimeStamp mtime = disk_interface_.LStat(s.AsString(), nullptr, &err);
     if (mtime == -1)
       Error("%s", err.c_str());  // Log and ignore Stat() errors.
     return mtime == 0;
@@ -988,7 +988,8 @@ bool WarningEnable(const string& name, Options* options, BuildConfig* config) {
     printf("warning flags:\n"
 "  dupbuild={err,warn}  multiple build lines for one target\n"
 "  phonycycle={err,warn}  phony build statement references itself\n"
-"  missingdepfile={err,warn}  how to treat missing depfiles\n");
+"  missingdepfile={err,warn}  how to treat missing depfiles\n"
+"  outputdir={err,warn}  how to treat outputs that are directories\n");
     return false;
   } else if (name == "dupbuild=err") {
     options->dupe_edges_should_err = true;
@@ -1008,11 +1009,18 @@ bool WarningEnable(const string& name, Options* options, BuildConfig* config) {
   } else if (name == "missingdepfile=warn") {
     config->missing_depfile_should_err = false;
     return true;
+  } else if (name == "outputdir=err") {
+    config->output_directory_should_err = true;
+    return true;
+  } else if (name == "outputdir=warn") {
+    config->output_directory_should_err = false;
+    return true;
   } else {
     const char* suggestion =
         SpellcheckString(name.c_str(), "dupbuild=err", "dupbuild=warn",
                          "phonycycle=err", "phonycycle=warn",
-                         "missingdepfile=err", "missingdepfile=warn", NULL);
+                         "missingdepfile=err", "missingdepfile=warn",
+                         "outputdir=err", "outputdir=warn", NULL);
     if (suggestion) {
       Error("unknown warning flag '%s', did you mean '%s'?",
             name.c_str(), suggestion);

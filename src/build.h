@@ -143,7 +143,8 @@ struct BuildConfig {
   BuildConfig() : verbosity(NORMAL), dry_run(false), parallelism(1),
                   failures_allowed(1), max_load_average(-0.0f),
                   frontend(NULL), frontend_file(NULL),
-                  missing_depfile_should_err(false) {}
+                  missing_depfile_should_err(false),
+                  output_directory_should_err(false) {}
 
   enum Verbosity {
     NORMAL,
@@ -166,6 +167,9 @@ struct BuildConfig {
 
   /// Whether a missing depfile should warn or print an error.
   bool missing_depfile_should_err;
+
+  /// Whether an output can be a directory
+  bool output_directory_should_err;
 };
 
 /// Builder wraps the build process: starting commands, updating status.

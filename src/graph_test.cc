@@ -416,8 +416,36 @@ TEST_F(GraphTest, InputSymlinkDangling) {
   EXPECT_TRUE(GetNode("out")->dirty());
 }
 
+TEST_F(GraphTest, InputDirectoryUpToDate) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"build out: cat inputs\n"));
 
-// TODO: tests around directory timestamps
+  fs_.Create("out", "");
+  EXPECT_TRUE(fs_.MakeDir("inputs"));
+  EXPECT_TRUE(fs_.WriteFile("inputs/foo", ""));
+
+  string err;
+  EXPECT_TRUE(scan_.RecomputeDirty(GetNode("out"), &err));
+  ASSERT_EQ("", err);
+
+  EXPECT_FALSE(GetNode("out")->dirty());
+}
+
+TEST_F(GraphTest, InputDirectoryChanged) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"build out: cat inputs\n"));
+
+  fs_.Create("out", "");
+  EXPECT_TRUE(fs_.MakeDir("inputs"));
+  fs_.Tick();
+  EXPECT_TRUE(fs_.WriteFile("inputs/foo", ""));
+
+  string err;
+  EXPECT_TRUE(scan_.RecomputeDirty(GetNode("out"), &err));
+  ASSERT_EQ("", err);
+
+  EXPECT_TRUE(GetNode("out")->dirty());
+}
 
 TEST_F(GraphTest, DependencyCycle) {
   AssertParse(&state_,
