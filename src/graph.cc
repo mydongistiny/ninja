@@ -345,7 +345,9 @@ bool DependencyScan::RecomputeOutputsDirty(Edge* edge, Node* most_recent_input,
       // Phony edges don't write any output.  Outputs are only dirty if
       // there are no inputs and we're missing the output.
       if (edge->inputs_.empty() && !(*o)->exists()) {
-        if (missing_phony_is_err_) {
+        // For phony targets defined in the ninja file, error when using dirty phony edges.
+        // The phony edges automatically created from depfiles still need the old behavior.
+        if (missing_phony_is_err_ && !edge->phony_from_depfile_) {
           *err = "output " + (*o)->path() + " of phony edge doesn't exist. Missing 'phony_output = true'?";
           return false;
         } else {
@@ -875,4 +877,6 @@ void ImplicitDepLoader::CreatePhonyInEdge(Node* node) {
   // to avoid a potential stuck build.  If we do call RecomputeDirty for
   // this node, it will simply set outputs_ready_ to the correct value.
   phony_edge->outputs_ready_ = true;
+
+  phony_edge->phony_from_depfile_ = true;
 }

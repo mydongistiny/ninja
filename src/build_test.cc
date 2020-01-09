@@ -914,6 +914,29 @@ TEST_F(BuildTest, DepFileOK) {
   ASSERT_EQ("cc foo.c", edge->EvaluateCommand());
 }
 
+TEST_F(BuildTest, DepFileOKWithPhonyOutputs) {
+  string err;
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule cc\n  command = cc $in\n  depfile = $out.d\n"
+"build foo.o: cc foo.c\n"));
+
+  BuildConfig config(config_);
+  config.uses_phony_outputs = true;
+  Builder builder(&state_, config, nullptr, nullptr, &fs_, &status_, 0);
+  builder.command_runner_.reset(&command_runner_);
+  command_runner_.commands_ran_.clear();
+
+  fs_.Create("foo.c", "");
+  GetNode("bar.h")->MarkDirty();  // Mark bar.h as missing.
+  fs_.Create("foo.o.d", "foo.o: blah.h bar.h\n");
+  EXPECT_TRUE(builder.AddTarget("foo.o", &err));
+  ASSERT_EQ("", err);
+
+  ASSERT_TRUE(GetNode("bar.h")->in_edge()->phony_from_depfile_);
+
+  builder.command_runner_.release();
+}
+
 TEST_F(BuildTest, DepFileParseError) {
   string err;
   ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,

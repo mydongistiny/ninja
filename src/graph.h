@@ -378,6 +378,7 @@ public:
   size_t id_ = 0;
   bool outputs_ready_ = false;
   bool deps_missing_ = false;
+  bool phony_from_depfile_ = false;
   DepScanInfo dep_scan_info_;
 
   DeclIndex dfs_location() const { return pos_.dfs_location(); }
