@@ -2655,3 +2655,56 @@ TEST_F(BuildWithDepsLogTest, MissingDepfileError) {
 
   builder.command_runner_.release();
 }
+
+TEST_F(BuildTest, PreRemoveOutputs) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule touch\n  command = touch ${out}\n"
+"build out: touch in\n"
+"build out2: touch out\n"));
+
+  config_.uses_phony_outputs = true;
+  config_.pre_remove_output_files = true;
+
+  fs_.Create("out", "");
+  fs_.Tick();
+  fs_.Create("in", "");
+
+  string err;
+  EXPECT_TRUE(builder_.AddTarget("out2", &err));
+  EXPECT_EQ("", err);
+
+  fs_.files_created_.clear();
+
+  EXPECT_TRUE(builder_.Build(&err));
+  EXPECT_EQ("", err);
+
+  EXPECT_EQ(2u, command_runner_.commands_ran_.size());
+  EXPECT_EQ(2u, fs_.files_created_.size());
+  EXPECT_EQ(1u, fs_.files_removed_.size());
+}
+
+TEST_F(BuildTest, PreRemoveOutputsWithPhonyOutputs) {
+  ASSERT_NO_FATAL_FAILURE(AssertParse(&state_,
+"rule phony_out\n"
+"  command = echo ${out}\n"
+"  phony_output = true\n"
+"build out: phony_out\n"));
+
+  config_.uses_phony_outputs = true;
+  config_.pre_remove_output_files = true;
+
+  fs_.Create("out", "");
+
+  string err;
+  EXPECT_TRUE(builder_.AddTarget("out", &err));
+  EXPECT_EQ("", err);
+
+  fs_.files_created_.clear();
+
+  EXPECT_TRUE(builder_.Build(&err));
+  EXPECT_EQ("", err);
+
+  EXPECT_EQ(1u, command_runner_.commands_ran_.size());
+  EXPECT_EQ(0u, fs_.files_created_.size());
+  EXPECT_EQ(0u, fs_.files_removed_.size());
+}

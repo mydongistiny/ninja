@@ -830,11 +830,11 @@ Other build rules may not depend on `phony_output` rules unless they are also
 `phony_output`, so that it's not possible to accidentally cause everything to
 rebuild on every run.
 +
-When `-w usesphonyoutputs=yes` is set on the ninja command line, it becomes an
+When `-o usesphonyoutputs=yes` is set on the ninja command line, it becomes an
 error for a `phony` rule to cause rebuilds, so that users can be found and
 migrated.
 +
-Properly using `phony_output` and turning on `-w usesphonyoutputs=yes` allows
+Properly using `phony_output` and turning on `-o usesphonyoutputs=yes` allows
 the `-w outputdir={err,warn}` (consider output files that are directories as
 errors/warnings), `-w missingoutfile={err,warn}` (error/warn when an output file
 does not exist after a successful rule execution), and `-w oldoutput={err,warn}`

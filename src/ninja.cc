@@ -232,6 +232,7 @@ void Usage(const BuildConfig& config) {
 "  -d MODE  enable debugging (use '-d list' to list modes)\n"
 "  -t TOOL  run a subtool (use '-t list' to list subtools)\n"
 "    terminates toplevel options; further flags are passed to the tool\n"
+"  -o FLAG  adjust options (use '-o list' to list options)\n"
 "  -w FLAG  adjust warnings (use '-w list' to list warnings)\n"
 #ifndef _WIN32
 "\n"
@@ -990,8 +991,7 @@ bool WarningEnable(const string& name, Options* options, BuildConfig* config) {
 "  phonycycle={err,warn}  phony build statement references itself\n"
 "  missingdepfile={err,warn}  how to treat missing depfiles\n"
 "\n"
-"  usesphonyoutputs={yes,no}  whether the generate uses 'phony_output's so \n"
-"                             that the following warnings work\n"
+" requires -o usesphonyoutputs=yes\n"
 "  outputdir={err,warn}  how to treat outputs that are directories\n"
 "  missingoutfile={err,warn}  how to treat missing output files\n"
 "  oldoutput={err,warn}  how to treat output files older than their inputs\n");
@@ -1013,12 +1013,6 @@ bool WarningEnable(const string& name, Options* options, BuildConfig* config) {
     return true;
   } else if (name == "missingdepfile=warn") {
     config->missing_depfile_should_err = false;
-    return true;
-  } else if (name == "usesphonyoutputs=yes") {
-    config->uses_phony_outputs = true;
-    return true;
-  } else if (name == "usesphonyoutputs=no") {
-    config->uses_phony_outputs = false;
     return true;
   } else if (name == "outputdir=err") {
     config->output_directory_should_err = true;
@@ -1043,7 +1037,6 @@ bool WarningEnable(const string& name, Options* options, BuildConfig* config) {
         SpellcheckString(name.c_str(), "dupbuild=err", "dupbuild=warn",
                          "phonycycle=err", "phonycycle=warn",
                          "missingdepfile=err", "missingdepfile=warn",
-                         "usesphonyoutputs=yes", "usesphonyoutputs=no",
                          "outputdir=err", "outputdir=warn",
                          "missingoutfile=err", "missingoutfile=warn",
                          "oldoutput=err", "oldoutput=warn", NULL);
@@ -1052,6 +1045,46 @@ bool WarningEnable(const string& name, Options* options, BuildConfig* config) {
             name.c_str(), suggestion);
     } else {
       Error("unknown warning flag '%s'", name.c_str());
+    }
+    return false;
+  }
+}
+
+/// Set an option flag.  Returns false if Ninja should exit instead  of
+/// continuing.
+bool OptionEnable(const string& name, Options* options, BuildConfig* config) {
+  if (name == "list") {
+    printf("option flags:\n"
+"  usesphonyoutputs={yes,no}  whether the generate uses 'phony_output's so \n"
+"                             that these warnings work:\n"
+"                                outputdir\n"
+"                                missingoutfile\n"
+"                                oldoutput\n"
+"  preremoveoutputs={yes,no}  whether to remove outputs before running rule\n");
+    return false;
+  } else if (name == "usesphonyoutputs=yes") {
+    config->uses_phony_outputs = true;
+    return true;
+  } else if (name == "usesphonyoutputs=no") {
+    config->uses_phony_outputs = false;
+    return true;
+  } else if (name == "preremoveoutputs=yes") {
+    config->pre_remove_output_files = true;
+    return true;
+  } else if (name == "preremoveoutputs=no") {
+    config->pre_remove_output_files = false;
+    return true;
+  } else {
+    const char* suggestion =
+        SpellcheckString(name.c_str(),
+                         "usesphonyoutputs=yes", "usesphonyoutputs=no",
+                         "preremoveoutputs=yes", "preremoveoutputs=no",
+                         NULL);
+    if (suggestion) {
+      Error("unknown option flag '%s', did you mean '%s'?",
+            name.c_str(), suggestion);
+    } else {
+      Error("unknown option flag '%s'", name.c_str());
     }
     return false;
   }
@@ -1231,7 +1264,7 @@ int ReadFlags(int* argc, char*** argv,
 
   int opt;
   while (!options->tool &&
-         (opt = getopt_long(*argc, *argv, "d:f:j:k:l:mnt:vw:C:ph", kLongOptions,
+         (opt = getopt_long(*argc, *argv, "d:f:j:k:l:mnt:vw:o:C:ph", kLongOptions,
                             NULL)) != -1) {
     switch (opt) {
       case 'd':
@@ -1287,6 +1320,10 @@ int ReadFlags(int* argc, char*** argv,
         if (!WarningEnable(optarg, options, config))
           return 1;
         break;
+      case 'o':
+        if (!OptionEnable(optarg, options, config))
+          return 1;
+        break;
       case 'C':
         options->working_dir = optarg;
         break;
@@ -1313,6 +1350,10 @@ int ReadFlags(int* argc, char*** argv,
 
   if (config->frontend != NULL && config->frontend_file != NULL) {
     Fatal("only one of --frontend or --frontend_file may be specified.");
+  }
+
+  if (config->pre_remove_output_files && !config->uses_phony_outputs) {
+    Fatal("preremoveoutputs=yes requires usesphonyoutputs=yes.");
   }
 
   return -1;

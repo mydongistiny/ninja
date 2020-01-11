@@ -147,7 +147,8 @@ struct BuildConfig {
                   uses_phony_outputs(false),
                   output_directory_should_err(false),
                   missing_output_file_should_err(false),
-                  old_output_should_err(false) {}
+                  old_output_should_err(false),
+                  pre_remove_output_files(false) {}
 
   enum Verbosity {
     NORMAL,
@@ -184,6 +185,9 @@ struct BuildConfig {
   /// Whether an output with an older timestamp than the inputs should
   /// warn or print an error.
   bool old_output_should_err;
+
+  /// Whether to remove outputs before executing rule commands
+  bool pre_remove_output_files;
 };
 
 /// Builder wraps the build process: starting commands, updating status.

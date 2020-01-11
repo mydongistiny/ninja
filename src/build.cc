@@ -535,12 +535,22 @@ bool Builder::StartEdge(Edge* edge, string* err) {
   status_->BuildEdgeStarted(edge, start_time_millis);
 
   if (!edge->IsPhonyOutput()) {
-    // Create directories necessary for outputs.
-    // XXX: this will block; do we care?
     for (vector<Node*>::iterator o = edge->outputs_.begin();
          o != edge->outputs_.end(); ++o) {
+      // Create directories necessary for outputs.
+      // XXX: this will block; do we care?
       if (!disk_interface_->MakeDirs((*o)->path()))
         return false;
+
+      if (!(*o)->exists())
+        continue;
+
+      // Remove existing outputs for non-restat rules.
+      // XXX: this will block; do we care?
+      if (config_.pre_remove_output_files && !edge->IsRestat() && !config_.dry_run) {
+        if (disk_interface_->RemoveFile((*o)->path()) < 0)
+          return false;
+      }
     }
   }
 
