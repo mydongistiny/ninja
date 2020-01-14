@@ -920,21 +920,15 @@ TEST_F(BuildTest, DepFileOKWithPhonyOutputs) {
 "rule cc\n  command = cc $in\n  depfile = $out.d\n"
 "build foo.o: cc foo.c\n"));
 
-  BuildConfig config(config_);
-  config.uses_phony_outputs = true;
-  Builder builder(&state_, config, nullptr, nullptr, &fs_, &status_, 0);
-  builder.command_runner_.reset(&command_runner_);
-  command_runner_.commands_ran_.clear();
+  config_.uses_phony_outputs = true;
 
   fs_.Create("foo.c", "");
   GetNode("bar.h")->MarkDirty();  // Mark bar.h as missing.
   fs_.Create("foo.o.d", "foo.o: blah.h bar.h\n");
-  EXPECT_TRUE(builder.AddTarget("foo.o", &err));
+  EXPECT_TRUE(builder_.AddTarget("foo.o", &err));
   ASSERT_EQ("", err);
 
   ASSERT_TRUE(GetNode("bar.h")->in_edge()->phony_from_depfile_);
-
-  builder.command_runner_.release();
 }
 
 TEST_F(BuildTest, DepFileParseError) {
@@ -2400,18 +2394,13 @@ TEST_F(BuildTest, OutputDirectoryWarning) {
 
   config_.uses_phony_outputs = true;
 
-  Builder builder(&state_, config_, NULL, NULL, &fs_, &status_, 0);
-  builder.command_runner_.reset(&command_runner_);
-
   string err;
-  EXPECT_TRUE(builder.AddTarget("outdir", &err));
+  EXPECT_TRUE(builder_.AddTarget("outdir", &err));
   EXPECT_EQ("", err);
-  EXPECT_TRUE(builder.Build(&err));
+  EXPECT_TRUE(builder_.Build(&err));
   EXPECT_EQ("", err);
 
   EXPECT_EQ("ninja: outputs should be files, not directories: outdir", status_.last_output_);
-
-  builder.command_runner_.release();
 }
 
 TEST_F(BuildTest, OutputDirectoryError) {
@@ -2423,18 +2412,13 @@ TEST_F(BuildTest, OutputDirectoryError) {
   config_.uses_phony_outputs = true;
   config_.output_directory_should_err = true;
 
-  Builder builder(&state_, config_, NULL, NULL, &fs_, &status_, 0);
-  builder.command_runner_.reset(&command_runner_);
-
   string err;
-  EXPECT_TRUE(builder.AddTarget("outdir", &err));
+  EXPECT_TRUE(builder_.AddTarget("outdir", &err));
   EXPECT_EQ("", err);
-  EXPECT_FALSE(builder.Build(&err));
+  EXPECT_FALSE(builder_.Build(&err));
   EXPECT_EQ("subcommand failed", err);
 
   EXPECT_EQ("ninja: outputs should be files, not directories: outdir", status_.last_output_);
-
-  builder.command_runner_.release();
 }
 
 TEST_F(BuildTest, OutputFileMissingIgnore) {
@@ -2458,18 +2442,13 @@ TEST_F(BuildTest, OutputFileMissingWarning) {
 
   config_.uses_phony_outputs = true;
 
-  Builder builder(&state_, config_, NULL, NULL, &fs_, &status_, 0);
-  builder.command_runner_.reset(&command_runner_);
-
   string err;
-  EXPECT_TRUE(builder.AddTarget("outfile", &err));
+  EXPECT_TRUE(builder_.AddTarget("outfile", &err));
   EXPECT_EQ("", err);
-  EXPECT_TRUE(builder.Build(&err));
+  EXPECT_TRUE(builder_.Build(&err));
   EXPECT_EQ("", err);
 
   EXPECT_EQ("ninja: output file missing after successful execution: outfile", status_.last_output_);
-
-  builder.command_runner_.release();
 }
 
 TEST_F(BuildTest, OutputFileMissingError) {
@@ -2480,18 +2459,13 @@ TEST_F(BuildTest, OutputFileMissingError) {
   config_.uses_phony_outputs = true;
   config_.missing_output_file_should_err = true;
 
-  Builder builder(&state_, config_, NULL, NULL, &fs_, &status_, 0);
-  builder.command_runner_.reset(&command_runner_);
-
   string err;
-  EXPECT_TRUE(builder.AddTarget("outfile", &err));
+  EXPECT_TRUE(builder_.AddTarget("outfile", &err));
   EXPECT_EQ("", err);
-  EXPECT_FALSE(builder.Build(&err));
+  EXPECT_FALSE(builder_.Build(&err));
   EXPECT_EQ("subcommand failed", err);
 
   EXPECT_EQ("ninja: output file missing after successful execution: outfile", status_.last_output_);
-
-  builder.command_runner_.release();
 }
 
 TEST_F(BuildTest, OutputFileNotNeeded) {
@@ -2504,16 +2478,11 @@ TEST_F(BuildTest, OutputFileNotNeeded) {
   config_.uses_phony_outputs = true;
   config_.missing_output_file_should_err = true;
 
-  Builder builder(&state_, config_, NULL, NULL, &fs_, &status_, 0);
-  builder.command_runner_.reset(&command_runner_);
-
   string err;
-  EXPECT_TRUE(builder.AddTarget("outphony", &err));
+  EXPECT_TRUE(builder_.AddTarget("outphony", &err));
   EXPECT_EQ("", err);
-  EXPECT_TRUE(builder.Build(&err));
+  EXPECT_TRUE(builder_.Build(&err));
   EXPECT_EQ("", err);
-
-  builder.command_runner_.release();
 }
 
 TEST_F(BuildWithLogTest, OldOutputFileIgnored) {
@@ -2550,17 +2519,14 @@ TEST_F(BuildWithLogTest, OldOutputFileWarning) {
 
   config_.uses_phony_outputs = true;
 
-  Builder builder(&state_, config_, &build_log_, NULL, &fs_, &status_, 0);
-  builder.command_runner_.reset(&command_runner_);
-
   fs_.Create("in", "");
   fs_.Tick();
   fs_.Create("out", "");
 
   string err;
-  EXPECT_TRUE(builder.AddTarget("out", &err));
+  EXPECT_TRUE(builder_.AddTarget("out", &err));
   EXPECT_EQ("", err);
-  EXPECT_TRUE(builder.Build(&err));
+  EXPECT_TRUE(builder_.Build(&err));
   EXPECT_EQ("", err);
 
   fs_.Tick();
@@ -2568,14 +2534,12 @@ TEST_F(BuildWithLogTest, OldOutputFileWarning) {
 
   command_runner_.commands_ran_.clear();
   state_.Reset();
-  EXPECT_TRUE(builder.AddTarget("out", &err));
+  EXPECT_TRUE(builder_.AddTarget("out", &err));
   EXPECT_EQ("", err);
-  EXPECT_TRUE(builder.Build(&err));
+  EXPECT_TRUE(builder_.Build(&err));
   EXPECT_EQ("", err);
 
   EXPECT_EQ("ninja: Missing `restat`? An output file is older than the most recent input:\n output: out\n  input: in", status_.last_output_);
-
-  builder.command_runner_.release();
 }
 
 TEST_F(BuildWithLogTest, OldOutputFileError) {
@@ -2586,17 +2550,14 @@ TEST_F(BuildWithLogTest, OldOutputFileError) {
   config_.uses_phony_outputs = true;
   config_.old_output_should_err = true;
 
-  Builder builder(&state_, config_, &build_log_, NULL, &fs_, &status_, 0);
-  builder.command_runner_.reset(&command_runner_);
-
   fs_.Create("in", "");
   fs_.Tick();
   fs_.Create("out", "");
 
   string err;
-  EXPECT_TRUE(builder.AddTarget("out", &err));
+  EXPECT_TRUE(builder_.AddTarget("out", &err));
   EXPECT_EQ("", err);
-  EXPECT_TRUE(builder.Build(&err));
+  EXPECT_TRUE(builder_.Build(&err));
   EXPECT_EQ("", err);
 
   fs_.Tick();
@@ -2604,14 +2565,12 @@ TEST_F(BuildWithLogTest, OldOutputFileError) {
 
   command_runner_.commands_ran_.clear();
   state_.Reset();
-  EXPECT_TRUE(builder.AddTarget("out", &err));
+  EXPECT_TRUE(builder_.AddTarget("out", &err));
   EXPECT_EQ("", err);
-  EXPECT_FALSE(builder.Build(&err));
+  EXPECT_FALSE(builder_.Build(&err));
   EXPECT_EQ("subcommand failed", err);
 
   EXPECT_EQ("ninja: Missing `restat`? An output file is older than the most recent input:\n output: out\n  input: in", status_.last_output_);
-
-  builder.command_runner_.release();
 }
 
 TEST_F(BuildWithLogTest, OutputFileUpdated) {
@@ -2622,17 +2581,14 @@ TEST_F(BuildWithLogTest, OutputFileUpdated) {
   config_.uses_phony_outputs = true;
   config_.old_output_should_err = true;
 
-  Builder builder(&state_, config_, &build_log_, NULL, &fs_, &status_, 0);
-  builder.command_runner_.reset(&command_runner_);
-
   fs_.Create("in", "");
   fs_.Tick();
   fs_.Create("out", "");
 
   string err;
-  EXPECT_TRUE(builder.AddTarget("out", &err));
+  EXPECT_TRUE(builder_.AddTarget("out", &err));
   EXPECT_EQ("", err);
-  EXPECT_TRUE(builder.Build(&err));
+  EXPECT_TRUE(builder_.Build(&err));
   EXPECT_EQ("", err);
 
   fs_.Tick();
@@ -2640,14 +2596,12 @@ TEST_F(BuildWithLogTest, OutputFileUpdated) {
 
   command_runner_.commands_ran_.clear();
   state_.Reset();
-  EXPECT_TRUE(builder.AddTarget("out", &err));
+  EXPECT_TRUE(builder_.AddTarget("out", &err));
   EXPECT_EQ("", err);
-  EXPECT_TRUE(builder.Build(&err));
+  EXPECT_TRUE(builder_.Build(&err));
   EXPECT_EQ("", err);
 
   EXPECT_EQ("", status_.last_output_);
-
-  builder.command_runner_.release();
 }
 
 TEST_F(BuildWithDepsLogTest, MissingDepfileWarning) {
