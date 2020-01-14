@@ -2573,7 +2573,7 @@ TEST_F(BuildWithLogTest, OldOutputFileWarning) {
   EXPECT_TRUE(builder.Build(&err));
   EXPECT_EQ("", err);
 
-  EXPECT_EQ("ninja: Missing `restat`? An output file is older than the most recent input: out", status_.last_output_);
+  EXPECT_EQ("ninja: Missing `restat`? An output file is older than the most recent input:\n output: out\n  input: in", status_.last_output_);
 
   builder.command_runner_.release();
 }
@@ -2609,7 +2609,7 @@ TEST_F(BuildWithLogTest, OldOutputFileError) {
   EXPECT_FALSE(builder.Build(&err));
   EXPECT_EQ("subcommand failed", err);
 
-  EXPECT_EQ("ninja: Missing `restat`? An output file is older than the most recent input: out", status_.last_output_);
+  EXPECT_EQ("ninja: Missing `restat`? An output file is older than the most recent input:\n output: out\n  input: in", status_.last_output_);
 
   builder.command_runner_.release();
 }

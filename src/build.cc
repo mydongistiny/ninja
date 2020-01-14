@@ -603,13 +603,16 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
     vector<Node*> nodes_cleaned;
 
     TimeStamp newest_input = 0;
+    Node* newest_input_node = nullptr;
     for (vector<Node*>::iterator i = edge->inputs_.begin();
          i != edge->inputs_.end() - edge->order_only_deps_; ++i) {
       TimeStamp input_mtime = (*i)->mtime();
       if (input_mtime == -1)
         return false;
-      if (input_mtime > newest_input)
+      if (input_mtime > newest_input) {
         newest_input = input_mtime;
+        newest_input_node = (*i);
+      }
     }
 
     for (vector<Node*>::iterator o = edge->outputs_.begin();
@@ -631,8 +634,10 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
         } else if (!restat && new_mtime < newest_input) {
           if (!result->output.empty())
             result->output.append("\n");
-          result->output.append("ninja: Missing `restat`? An output file is older than the most recent input: ");
+          result->output.append("ninja: Missing `restat`? An output file is older than the most recent input:\n output: ");
           result->output.append((*o)->path());
+          result->output.append("\n  input: ");
+          result->output.append(newest_input_node->path());
           if (config_.old_output_should_err) {
             result->status = ExitFailure;
           }
